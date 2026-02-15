@@ -1,17 +1,7 @@
-let cachedData = null;
-let lastFetchTime = null;
-
 export default async function handler(req, res) {
   try {
-    const ONE_HOUR = 60 * 60 * 1000;
-
-    if (cachedData && lastFetchTime && (Date.now() - lastFetchTime < ONE_HOUR)) {
-      return res.status(200).json({
-        source: "cache",
-        last_updated: new Date(lastFetchTime).toISOString(),
-        data: cachedData
-      });
-    }
+    // نخلي Vercel يخزن الرد لمدة ساعة كاملة
+    res.setHeader("Cache-Control", "s-maxage=3600");
 
     const response = await fetch(
       `https://v6.exchangerate-api.com/v6/${process.env.EXCHANGE_API_KEY}/latest/USD`
@@ -20,16 +10,13 @@ export default async function handler(req, res) {
     const data = await response.json();
 
     if (data.result !== "success") {
-  return res.status(500).json({ error: data });
-}
-
-    cachedData = data.conversion_rates;
-    lastFetchTime = Date.now();
+      return res.status(500).json({ error: data });
+    }
 
     return res.status(200).json({
-      source: "api",
-      last_updated: new Date(lastFetchTime).toISOString(),
-      data: cachedData
+      last_updated: new Date().toISOString(),
+      base: "USD",
+      rates: data.conversion_rates
     });
 
   } catch (error) {
