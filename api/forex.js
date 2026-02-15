@@ -20,8 +20,8 @@ export default async function handler(req, res) {
     const data = await response.json();
 
     if (data.result !== "success") {
-      return res.status(500).json({ error: "Failed to fetch exchange rates" });
-    }
+  return res.status(500).json({ error: data });
+}
 
     cachedData = data.conversion_rates;
     lastFetchTime = Date.now();
