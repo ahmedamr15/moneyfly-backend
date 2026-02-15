@@ -1,6 +1,6 @@
 export default async function handler(req, res) {
   try {
-    // نخلي Vercel يخزن الرد لمدة ساعة كاملة
+    // نخلي Vercel   يخزن الرد لمدة ساعة كاملة
     res.setHeader("Cache-Control", "s-maxage=3600");
 
     const response = await fetch(
