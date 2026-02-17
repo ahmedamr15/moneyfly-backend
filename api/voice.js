@@ -14,111 +14,95 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: "Message is required" });
   }
 
-  const systemPrompt = `
-You are a deterministic financial transaction extraction engine.
+  try {
+    const systemPrompt = `
+You are a high-precision financial transaction extraction engine.
 
-Your task:
-Extract ALL financial actions from the sentence.
-The sentence MAY contain multiple transactions.
+This system is used in a real banking application.
+Accuracy is critical.
 
-IMPORTANT RULES:
+==============================
+CORE RULES
+==============================
 
-1) If there are multiple amounts → create multiple transaction objects.
-2) NEVER merge different financial actions.
-3) NEVER return empty transactions if financial amounts exist.
-4) If sentence contains 2 amounts → output 2 transactions.
-5) Parse the FULL sentence before responding. 
-6) CATEGORY LOGIC (STRICT):
-You are given an existing categories object structured like this:
+1) The input may contain MULTIPLE financial actions.
+2) Each financial action MUST be extracted as a SEPARATE transaction object.
+3) NEVER merge separate actions.
+4) NEVER ignore any detected monetary amount.
+5) If 3 distinct amounts → return 3 transaction objects.
+6) Parse the ENTIRE sentence before responding.
 
-{
-  "food": ["pizza","coffee","restaurant"],
-  "transport": ["uber","bus","taxi"],
-  "shopping": ["clothes","shoes"],
-  "salary": [],
-  "utilities": ["electricity","water","internet"],
-  "health": ["pharmacy","doctor"],
-  "entertainment": ["movies","games"],
-  "investment": [],
-  "other": []
-}
-STRICT RULES:
+==============================
+TRANSACTION TYPES
+==============================
 
-- You MUST first try to match the transaction to an existing category.
-- If a subcategory matches an existing subcategory → use it.
-- If the category exists but subcategory does not exist → suggest ONLY the new subcategory.
-- If neither category nor subcategory exists → suggest new category AND subcategory.
-- NEVER suggest a category or subcategory that already exists in the provided list.
-- If everything matches existing structure → suggestion must be null.
-IMPORTANT:
-- Do NOT hallucinate categories.
-- Do NOT invent categories randomly.
-- If unsure → use "other" and no suggestion.
-- Only suggest when high semantic confidence (>0.8).
-
-Suggestion format rules:
-
-If new subcategory under existing category:
-{
-  "category": "existingCategoryName",
-  "subcategory": "newSubcategoryName"
-}
-
-If new category:
-{
-  "category": "newCategoryName",
-  "subcategory": "firstSubcategoryName"
-}
-
-If no new suggestion needed:
-{
-  "category": null,
-  "subcategory": null
-}
-
-
-SUPPORTED TYPES:
 - expense
 - income
-- transfer (ONLY if clearly internal between user accounts)
+- transfer (ONLY internal between user accounts)
 
-ACCOUNTS AVAILABLE:
+==============================
+ACCOUNTS AVAILABLE
+==============================
+
 ${JSON.stringify(accounts)}
 
 DEFAULT ACCOUNT:
 ${defaultAccount}
 
-CATEGORIES AVAILABLE:
-${JSON.stringify(categories)}
+ACCOUNT RULES:
 
-ACCOUNT LOGIC:
-
-- If TWO known accounts mentioned → transfer
-  sourceAccount = first
-  destinationAccount = second
-
-- If ONE known account mentioned:
+1) If TWO known accounts mentioned → transfer
+2) If ONE account mentioned:
    - expense → sourceAccount = mentioned
    - income → destinationAccount = mentioned
-
-- If NO account mentioned:
+3) If no account mentioned:
    - expense → sourceAccount = defaultAccount
    - income → destinationAccount = defaultAccount
+4) Mentioning payment method is NOT transfer.
+5) If transfer keyword used but only one valid account → treat based on meaning.
 
-TRANSFER RULE:
-If sentence says "from X to Y" and both X and Y are in accounts → transfer.
-Otherwise treat as expense.
+==============================
+AMOUNT RULES
+==============================
 
-AMOUNT RULES:
-- Support Arabic numbers (ألف، مئة، خمسين، خمسمية، إلخ)
-- Support English numbers
-- Extract EACH amount separately
+- Detect numeric and written numbers.
+- Arabic and English supported.
+- Multiple distinct actions → multiple transactions.
+- "100 plus 50 on same item" → single 150.
+- Separate actions → separate objects.
 
-STRICT OUTPUT:
-Return JSON ONLY.
-No markdown.
+==============================
+CATEGORIES AVAILABLE
+==============================
+
+${JSON.stringify(categories)}
+
+CATEGORY RULES:
+
+1) Match best existing category/subcategory.
+2) Suggest ONLY if missing.
+3) If category exists but subcategory missing → suggest subcategory only.
+4) If neither exists → suggest both.
+5) Never suggest already existing category/subcategory.
+
+==============================
+CONFIDENCE RULE
+==============================
+
+> 0.90 high confidence
+0.75–0.89 medium
+< 0.75 low
+
+Be conservative.
+
+==============================
+STRICT OUTPUT RULE
+==============================
+
+Return STRICT JSON ONLY.
 No explanation.
-No text before or after JSON.
+No markdown.
+No backticks.
 
 FORMAT:
 
@@ -141,18 +125,20 @@ FORMAT:
 }
 `;
 
-  try {
     const response = await fetch(
-      "https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key=" +
-        process.env.GEMINI_API_KEY,
+      "https://openrouter.ai/api/v1/chat/completions",
       {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Authorization": `Bearer ${process.env.OPENROUTER_API_KEY}`,
+          "Content-Type": "application/json"
+        },
         body: JSON.stringify({
-          contents: [
-            {
-              parts: [{ text: systemPrompt + "\n\nUser sentence:\n" + message }]
-            }
+          model: "openrouter/auto",
+          temperature: 0,
+          messages: [
+            { role: "system", content: systemPrompt },
+            { role: "user", content: message }
           ]
         })
       }
@@ -160,17 +146,16 @@ FORMAT:
 
     const data = await response.json();
 
-    if (!data?.candidates?.length) {
+    if (!data?.choices?.[0]?.message?.content) {
       return res.status(500).json({
         error: "Invalid AI response",
         raw: data
       });
     }
 
-    let aiText =
-      data.candidates[0]?.content?.parts?.[0]?.text || "";
+    let aiText = data.choices[0].message.content;
 
-    // Remove markdown if exists
+    // Remove markdown if any
     aiText = aiText.replace(/```json|```/g, "").trim();
 
     let parsed;
@@ -181,18 +166,6 @@ FORMAT:
       return res.status(500).json({
         error: "AI did not return valid JSON",
         raw: aiText
-      });
-    }
-
-    // Prevent empty transactions if message clearly has numbers
-    if (
-      parsed.transactions &&
-      parsed.transactions.length === 0 &&
-      /\d|ألف|مئة|خمسين|مليون/.test(message)
-    ) {
-      return res.status(500).json({
-        error: "AI returned empty transactions unexpectedly",
-        raw: parsed
       });
     }
 
