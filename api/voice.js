@@ -102,7 +102,7 @@ FORMAT:
         "Content-Type": "application/json"
       },
       body: JSON.stringify({
-        model: "google/gemma-3-12b",
+        model: "google/gemma-3-12b-it:free",
         temperature: 0,
         messages: [
           { role: "system", content: systemPrompt },
