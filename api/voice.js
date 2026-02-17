@@ -1,9 +1,15 @@
 export default async function handler(req, res) {
+
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" });
   }
 
-  const { message, accounts = [], defaultAccount = null, categories = {} } = req.body;
+  const {
+    message,
+    accounts = [],
+    defaultAccount = null,
+    categories = {}
+  } = req.body;
 
   if (!message) {
     return res.status(400).json({ error: "Message is required" });
@@ -15,89 +21,58 @@ export default async function handler(req, res) {
     "https://generativelanguage.googleapis.com/v1/models/gemini-2.5-pro:generateContent?key=" +
     API_KEY;
 
-  const systemPrompt = `<< You are a deterministic financial transaction extraction engine.
+  const prompt = `
+You are a strict financial transaction extraction engine.
 
-You MUST behave like a strict JSON compiler.
+You MUST return ONLY valid JSON.
+No markdown.
+No explanations.
+No backticks.
+No extra text.
 
+--------------------------------
 CRITICAL RULES:
 
 1) The sentence may contain MULTIPLE financial actions.
-2) You MUST extract EACH action as a SEPARATE transaction object.
+2) Extract EACH action as a SEPARATE transaction object.
 3) NEVER merge independent amounts.
-4) NEVER ignore any amount mentioned.
+4) NEVER ignore any number.
 5) Parse the FULL sentence before responding.
-6) DO NOT summarize.
-7) DO NOT interpret loosely.
-8) DO NOT hallucinate accounts or categories.
-9) Only use accounts provided in the Accounts list.
-10) Only suggest categories if they do NOT exist in provided Categories list.
-11) Return STRICT VALID JSON ONLY.
-12) No markdown.
-13) No explanations.
-14) No extra text.
-15) Output must be pure JSON parsable by JSON.parse.
+6) Only use accounts from provided list.
+7) Only suggest new category/subcategory if not already in provided categories.
+8) Do NOT hallucinate accounts or categories.
 
 --------------------------------
-SUPPORTED TYPES:
-
+TRANSACTION TYPES:
 - expense
 - income
 - transfer
 
 --------------------------------
-TRANSFER LOGIC (STRICT):
+TRANSFER LOGIC:
 
-A transfer ONLY exists if BOTH:
-- source account exists
-- destination account exists
-
-If:
-- source only → expense
-- destination only → income
-- neither → use verb meaning
-
-Example:
-"I bought pizza and paid with CIB"
-→ expense, sourceAccount = CIB
-
-"I transferred 1000 from HSBC to CIB"
-→ transfer
+- If BOTH source and destination accounts are mentioned → transfer.
+- If ONLY source mentioned → expense.
+- If ONLY destination mentioned → income.
+- If no account mentioned → use defaultAccount depending on type.
 
 --------------------------------
-ACCOUNT MATCHING:
+INPUT DATA:
 
-- Match EXACT or fuzzy match from provided Accounts list.
-- Do NOT create new account names.
-- If account not found in provided list → ignore it.
+Speech:
+"${message}"
 
---------------------------------
-CATEGORY RULES:
+Accounts:
+${JSON.stringify(accounts)}
 
-- Use closest match from provided Categories.
-- If subcategory exists → use it.
-- If clearly identifiable subcategory missing → suggest it.
-- If category missing entirely → suggest new category.
-- NEVER suggest category or subcategory that already exists.
+Default Account:
+${defaultAccount}
 
---------------------------------
-MULTI-AMOUNT RULES:
-
-If sentence contains:
-- separate actions → separate transaction objects
-- combined action (e.g., "100 plus 50 for same thing") → sum only if clearly same action
-- otherwise → separate
+Categories:
+${JSON.stringify(categories)}
 
 --------------------------------
-LANGUAGE SUPPORT:
-
-- Arabic and English supported.
-- Eastern Arabic numerals supported.
-- Written numbers supported (English and Arabic).
-- Slang financial verbs supported.
-- Detect context meaning (e.g., "I ate pizza for 50" = expense).
-
---------------------------------
-OUTPUT FORMAT (STRICT):
+RETURN FORMAT (STRICT JSON):
 
 {
   "transactions": [
@@ -117,49 +92,33 @@ OUTPUT FORMAT (STRICT):
   }
 }
 
-If no transactions found:
+If no transaction found:
 {
   "transactions": [],
   "suggestion": {
     "category": null,
     "subcategory": null
   }
-} >>`;
+}
+`;
 
   try {
+
     const response = await fetch(URL, {
       method: "POST",
       headers: {
         "Content-Type": "application/json"
       },
       body: JSON.stringify({
-        system_instruction: {
-          parts: [{ text: systemPrompt }]
-        },
         contents: [
           {
             parts: [
-              {
-                text: `
-User Speech:
-"${message}"
-
-Accounts:
-${JSON.stringify(accounts)}
-
-Default Account:
-${defaultAccount}
-
-Categories:
-${JSON.stringify(categories)}
-`
-              }
+              { text: prompt }
             ]
           }
         ],
         generationConfig: {
-          temperature: 0.05,
-          response_mime_type: "application/json"
+          temperature: 0.05
         }
       })
     });
@@ -174,9 +133,12 @@ ${JSON.stringify(categories)}
     }
 
     let aiText = data.candidates[0].content.parts[0].text.trim();
+
+    // Remove accidental markdown if model adds it
     aiText = aiText.replace(/```json|```/g, "").trim();
 
     let parsed;
+
     try {
       parsed = JSON.parse(aiText);
     } catch (e) {
@@ -190,7 +152,7 @@ ${JSON.stringify(categories)}
 
   } catch (error) {
     return res.status(500).json({
-      error: "Server error",
+      error: "Internal server error",
       details: error.message
     });
   }
