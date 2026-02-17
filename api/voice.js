@@ -18,16 +18,17 @@ Return ONLY valid JSON in this exact format:
 {
   "type": "expense | income | transfer",
   "amount": number,
-  "category": "string",
+  "category": "food | transport | utilities | shopping | salary | entertainment | health | education | other",
   "confidence": number
 }
 
 Rules:
 - Detect transaction type (expense, income, transfer)
 - Extract total amount (sum if multiple numbers exist)
-- Choose category from: food, transport, utilities, shopping, salary, entertainment, health, education, other
 - confidence must be between 0 and 1
-- DO NOT return any text outside JSON
+- DO NOT wrap the JSON in markdown.
+- DO NOT return any explanation.
+- Return RAW JSON only.
 
 User message:
 "${message}"
@@ -64,7 +65,7 @@ User message:
 
     const data = await callGemini(prompt);
 
-    const aiText =
+    let aiText =
       data?.candidates?.[0]?.content?.parts?.[0]?.text || null;
 
     if (!aiText) {
@@ -73,6 +74,12 @@ User message:
         raw: data,
       });
     }
+
+    // 🔥 تنظيف markdown لو موجود
+    aiText = aiText
+      .replace(/```json/g, "")
+      .replace(/```/g, "")
+      .trim();
 
     let parsed;
     try {
