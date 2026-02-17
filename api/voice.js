@@ -3,77 +3,88 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: "Method not allowed" });
   }
 
+  const { message, accounts = [], defaultAccount = null, categories = {} } = req.body;
+
+  if (!message) {
+    return res.status(400).json({ error: "Message is required" });
+  }
+
   try {
-    const { message } = req.body;
-
-    if (!message) {
-      return res.status(400).json({ error: "Message is required" });
-    }
-
     const prompt = `
-You are an advanced financial transaction parser.
+You are a financial transaction parser.
 
-Your task is to convert natural language into structured financial transactions.
+Your job:
+Convert the following speech into structured JSON transactions.
 
-The input may be Arabic or English.
-The input may contain multiple financial events.
+INPUT:
+Speech: "${message}"
 
-----------------------------------------------------
-CORE RULE
-----------------------------------------------------
+User Accounts:
+${JSON.stringify(accounts)}
 
-Determine money direction:
+Default Account:
+${defaultAccount}
 
-- Money leaves user → expense
-- Money enters user → income
-- Money moves between user accounts → transfer
+Existing Categories & Subcategories:
+${JSON.stringify(categories)}
 
-Understand meaning semantically.
-Do NOT rely only on verbs.
+RULES:
 
-----------------------------------------------------
-CATEGORY SYSTEM
-----------------------------------------------------
+1) Extract ALL transactions mentioned.
+2) Detect type:
+   - expense
+   - income
+   - transfer
 
-Available categories:
+3) ACCOUNT LOGIC:
 
-{
-  "food": ["pizza","coffee","restaurant","lunch","dinner"],
-  "utilities": ["electricity","water","internet"],
-  "shopping": ["clothes","shoes","electronics"],
-  "transport": ["uber","taxi","gas"],
-  "salary": ["salary"],
-  "other": []
-}
+- If TWO accounts mentioned → transfer
+  sourceAccount = first
+  destinationAccount = second
 
-If new subcategory detected, suggest it.
+- If ONE account mentioned:
+   - expense → sourceAccount = mentioned
+   - income → destinationAccount = mentioned
 
-----------------------------------------------------
-OUTPUT FORMAT (STRICT JSON)
-----------------------------------------------------
+- If NO account mentioned:
+   - expense → sourceAccount = defaultAccount
+   - income → destinationAccount = defaultAccount
+
+- Mentioning payment account is NOT transfer
+  Example:
+  "I bought pizza and paid with CIB"
+  → expense, sourceAccount=CIB
+
+4) Category Logic:
+- Use closest matching category from existing list
+- If subcategory missing but clearly identifiable → suggest new subcategory
+- If category missing → suggest new category
+
+5) IMPORTANT:
+Return STRICT JSON only.
+No markdown.
+No explanation.
+No backticks.
+
+FORMAT:
 
 {
   "transactions": [
     {
-      "type": "income | expense | transfer",
+      "type": "expense | income | transfer",
       "amount": number,
-      "category": string,
-      "subcategory": string | null,
+      "category": string or null,
+      "subcategory": string or null,
+      "sourceAccount": string or null,
+      "destinationAccount": string or null,
       "confidence": number
     }
   ],
   "suggestion": {
-    "category": string | null,
-    "subcategory": string | null
+    "category": string or null,
+    "subcategory": string or null
   }
 }
-
-Return JSON only.
-No markdown.
-No explanation.
-
-MESSAGE:
-"${message}"
 `;
 
     const response = await fetch(
@@ -81,46 +92,47 @@ MESSAGE:
         process.env.GEMINI_API_KEY,
       {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           contents: [
             {
-              parts: [{ text: prompt }],
-            },
-          ],
-        }),
+              parts: [{ text: prompt }]
+            }
+          ]
+        })
       }
     );
 
     const data = await response.json();
 
-    if (!data.candidates || !data.candidates[0]) {
+    if (!data?.candidates?.[0]?.content?.parts?.[0]?.text) {
       return res.status(500).json({
         error: "Invalid AI response",
-        raw: data,
+        raw: data
       });
     }
 
-    let text = data.candidates[0].content.parts[0].text;
+    let aiText = data.candidates[0].content.parts[0].text;
 
-    // Remove markdown if model added it
-    text = text.replace(/```json/g, "").replace(/```/g, "").trim();
+    // Remove markdown if any
+    aiText = aiText.replace(/```json|```/g, "").trim();
 
+    let parsed;
     try {
-      const parsed = JSON.parse(text);
-      return res.status(200).json(parsed);
+      parsed = JSON.parse(aiText);
     } catch (e) {
       return res.status(500).json({
         error: "AI did not return valid JSON",
-        raw: text,
+        raw: aiText
       });
     }
+
+    return res.status(200).json(parsed);
+
   } catch (error) {
     return res.status(500).json({
-      error: "Server crashed",
-      details: error.message,
+      error: "Server error",
+      details: error.message
     });
   }
 }
