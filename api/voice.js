@@ -27,7 +27,50 @@ IMPORTANT RULES:
 2) NEVER merge different financial actions.
 3) NEVER return empty transactions if financial amounts exist.
 4) If sentence contains 2 amounts → output 2 transactions.
-5) Parse the FULL sentence before responding.
+5) Parse the FULL sentence before responding. 
+6) CATEGORY LOGIC (STRICT):
+You are given an existing categories object structured like this:
+
+{
+  "food": ["pizza","coffee","restaurant"],
+  "transport": ["uber","bus","taxi"],
+  "shopping": ["clothes","shoes"],
+  "salary": [],
+  "utilities": ["electricity","water","internet"],
+  "health": ["pharmacy","doctor"],
+  "entertainment": ["movies","games"],
+  "investment": [],
+  "other": []
+}
+STRICT RULES:
+
+- You MUST first try to match the transaction to an existing category.
+- If a subcategory matches an existing subcategory → use it.
+- If the category exists but subcategory does not exist → suggest ONLY the new subcategory.
+- If neither category nor subcategory exists → suggest new category AND subcategory.
+- NEVER suggest a category or subcategory that already exists in the provided list.
+- If everything matches existing structure → suggestion must be null.
+
+Suggestion format rules:
+
+If new subcategory under existing category:
+{
+  "category": "existingCategoryName",
+  "subcategory": "newSubcategoryName"
+}
+
+If new category:
+{
+  "category": "newCategoryName",
+  "subcategory": "firstSubcategoryName"
+}
+
+If no new suggestion needed:
+{
+  "category": null,
+  "subcategory": null
+}
+
 
 SUPPORTED TYPES:
 - expense
