@@ -1,92 +1,105 @@
-const { GoogleGenAI } = require("@google/genai");
+const prompt = `
+You are an advanced financial transaction parser.
 
-const ai = new GoogleGenAI({
-  apiKey: process.env.GEMINI_API_KEY,
-});
+Your task is to convert natural language into structured financial transactions.
 
-const MODEL = "models/gemini-2.5-flash";
+The input may be Arabic or English.
+The input may contain multiple financial events.
 
-function cleanJSON(text) {
-  if (!text) return null;
+----------------------------------------------------
+CORE INTELLIGENCE RULE
+----------------------------------------------------
 
-  let cleaned = text.trim();
+Determine the DIRECTION of money:
 
-  if (cleaned.startsWith("```")) {
-    cleaned = cleaned.replace(/```json/g, "")
-                     .replace(/```/g, "")
-                     .trim();
-  }
+- If money leaves the user → type = "expense"
+- If money enters the user → type = "income"
+- If money moves between user's own accounts → type = "transfer"
 
-  return cleaned;
+Do NOT rely only on specific verbs.
+Understand meaning semantically.
+
+Examples:
+"I ate pizza for 500" → expense
+"My salary came" → income
+"I moved money between my accounts" → transfer
+
+----------------------------------------------------
+MULTIPLE TRANSACTIONS
+----------------------------------------------------
+
+If multiple financial events exist:
+Extract ALL of them separately.
+
+----------------------------------------------------
+CATEGORY SYSTEM
+----------------------------------------------------
+
+Available categories and subcategories:
+
+{
+  "food": ["pizza", "coffee", "restaurant", "lunch", "dinner"],
+  "utilities": ["electricity", "water", "internet"],
+  "shopping": ["clothes", "shoes", "electronics"],
+  "transport": ["uber", "taxi", "gas"],
+  "salary": ["salary"],
+  "other": []
 }
 
-module.exports = async function handler(req, res) {
+Rules:
+1) Match best fitting category + subcategory.
+2) If no subcategory matches but category is clear → use category + subcategory = null.
+3) If new logical subcategory appears → suggest it.
+4) If completely new category needed → suggest new category.
 
-  if (req.method !== "POST") {
-    return res.status(405).json({ error: "Method not allowed" });
-  }
+----------------------------------------------------
+SUGGESTION SYSTEM
+----------------------------------------------------
 
-  const { message } = req.body;
+If new subcategory detected:
+Return:
+{
+  "suggestedCategory": "smoking",
+  "suggestedSubcategory": "vape"
+}
 
-  if (!message) {
-    return res.status(400).json({ error: "Message is required" });
-  }
+If no suggestion needed:
+Return null for suggestions.
 
-  try {
+----------------------------------------------------
+OUTPUT FORMAT (STRICT JSON)
+----------------------------------------------------
 
-    const prompt = `
-Return STRICT JSON only.
-
-User message:
-"${message}"
-
-Return format:
 {
   "transactions": [
     {
-      "type": "expense | income",
+      "type": "income | expense | transfer",
       "amount": number,
-      "category": string
+      "category": string,
+      "subcategory": string | null,
+      "confidence": number
     }
-  ]
-}
-`;
-
-    const response = await ai.models.generateContent({
-      model: MODEL,
-      contents: prompt,
-    });
-
-    const rawText = response?.text;
-
-    const cleaned = cleanJSON(rawText);
-
-    if (!cleaned) {
-      return res.status(500).json({
-        error: "Empty AI response",
-        raw: rawText
-      });
-    }
-
-    let parsed;
-
-    try {
-      parsed = JSON.parse(cleaned);
-    } catch (err) {
-      return res.status(500).json({
-        error: "Invalid AI response",
-        raw: rawText
-      });
-    }
-
-    return res.status(200).json(parsed);
-
-  } catch (error) {
-
-    return res.status(500).json({
-      error: "Server error",
-      details: error.message
-    });
-
+  ],
+  "suggestion": {
+      "category": string | null,
+      "subcategory": string | null
   }
-};
+}
+
+----------------------------------------------------
+RULES
+----------------------------------------------------
+
+- Return JSON only.
+- No markdown.
+- No explanation.
+- Confidence 0 to 1.
+- Extract ALL numeric values.
+- Arabic and English supported.
+- Interpret written numbers.
+- Never assume salary unless explicitly mentioned.
+
+----------------------------------------------------
+MESSAGE:
+"${message}"
+`;
