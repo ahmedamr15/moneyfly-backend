@@ -1,3 +1,73 @@
+import { GoogleGenAI } from "@google/genai";
+
+const ai = new GoogleGenAI({
+  apiKey: process.env.GEMINI_API_KEY,
+});
+
+const MODEL = "models/gemini-2.5-flash";
+
+/*
+--------------------------------------------------
+DUMP CATEGORIES (Temporary until app sends them)
+--------------------------------------------------
+*/
+
+const EXISTING_CATEGORIES = [
+  {
+    name: "Food",
+    subcategories: ["Pizza", "Coffee", "Restaurant"]
+  },
+  {
+    name: "Smoking",
+    subcategories: ["Cigarettes"]
+  },
+  {
+    name: "Shopping",
+    subcategories: ["Clothes", "Shoes"]
+  },
+  {
+    name: "Utilities",
+    subcategories: ["Electricity", "Water", "Gas"]
+  },
+  {
+    name: "Salary",
+    subcategories: ["Main Salary"]
+  },
+  {
+    name: "Other",
+    subcategories: []
+  }
+];
+
+const REJECTED_SUGGESTIONS = [];
+
+/*
+--------------------------------------------------
+HELPER: Clean AI Markdown if returned
+--------------------------------------------------
+*/
+
+function cleanJSON(text) {
+  if (!text) return null;
+
+  let cleaned = text.trim();
+
+  // Remove markdown blocks if exist
+  if (cleaned.startsWith("```")) {
+    cleaned = cleaned.replace(/```json/g, "")
+                     .replace(/```/g, "")
+                     .trim();
+  }
+
+  return cleaned;
+}
+
+/*
+--------------------------------------------------
+VOICE ENDPOINT
+--------------------------------------------------
+*/
+
 export default async function handler(req, res) {
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" });
@@ -10,92 +80,101 @@ export default async function handler(req, res) {
   }
 
   try {
+
     const prompt = `
-You are a financial voice transaction parser.
+You are a financial transaction parser.
 
-Return ONLY valid JSON in this exact format:
+Return STRICT JSON only.
+No markdown.
+No explanation.
+No extra text.
 
-{
-  "type": "expense | income | transfer",
-  "amount": number,
-  "category": "food | transport | utilities | shopping | salary | entertainment | health | education | other",
-  "confidence": number
-}
+Existing categories:
+${JSON.stringify(EXISTING_CATEGORIES)}
+
+Rejected suggestions:
+${JSON.stringify(REJECTED_SUGGESTIONS)}
 
 Rules:
-- Detect transaction type (expense, income, transfer)
-- Extract total amount (sum if multiple numbers exist)
-- confidence must be between 0 and 1
-- DO NOT wrap the JSON in markdown.
-- DO NOT return any explanation.
-- Return RAW JSON only.
+1. Extract ALL financial transactions.
+2. If multiple amounts → create multiple transactions.
+3. Detect expense or income.
+4. Match category and subcategory if exists.
+5. If subcategory does not exist but category exists → suggest it.
+6. If category does not exist → suggest new category.
+7. Detect language.
+
+Return JSON in this format:
+
+{
+  "transactions": [
+    {
+      "type": "expense | income",
+      "amount": number,
+      "currency": "EGP",
+      "category": {
+        "name": string,
+        "exists": true | false
+      },
+      "subcategory": {
+        "name": string,
+        "exists": true | false
+      },
+      "note": string
+    }
+  ],
+  "categorySuggestions": [
+    {
+      "category": string,
+      "subcategory": string
+    }
+  ],
+  "meta": {
+    "confidence": number,
+    "language": "ar | en",
+    "multipleTransactions": true | false
+  }
+}
 
 User message:
 "${message}"
 `;
 
-    async function callGemini(prompt) {
-      for (let attempt = 1; attempt <= 3; attempt++) {
-        const response = await fetch(
-          "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=" +
-            process.env.GEMINI_API_KEY,
-          {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-              contents: [
-                {
-                  parts: [{ text: prompt }],
-                },
-              ],
-            }),
-          }
-        );
+    const response = await ai.models.generateContent({
+      model: MODEL,
+      contents: prompt,
+    });
 
-        if (response.status === 503 && attempt < 3) {
-          await new Promise((r) => setTimeout(r, 1000));
-          continue;
-        }
+    const rawText = response?.text;
 
-        return await response.json();
-      }
-    }
+    const cleaned = cleanJSON(rawText);
 
-    const data = await callGemini(prompt);
-
-    let aiText =
-      data?.candidates?.[0]?.content?.parts?.[0]?.text || null;
-
-    if (!aiText) {
+    if (!cleaned) {
       return res.status(500).json({
-        error: "Invalid AI response",
-        raw: data,
+        error: "AI returned empty response",
+        raw: rawText
       });
     }
 
-    // 🔥 تنظيف markdown لو موجود
-    aiText = aiText
-      .replace(/```json/g, "")
-      .replace(/```/g, "")
-      .trim();
-
     let parsed;
+
     try {
-      parsed = JSON.parse(aiText);
+      parsed = JSON.parse(cleaned);
     } catch (err) {
       return res.status(500).json({
         error: "AI did not return valid JSON",
-        raw: aiText,
+        raw: rawText
       });
     }
 
     return res.status(200).json(parsed);
+
   } catch (error) {
+
     return res.status(500).json({
       error: "Server error",
-      details: error.message,
+      details: error.message
     });
+
   }
 }
