@@ -1,4 +1,16 @@
-const prompt = `
+export default async function handler(req, res) {
+  if (req.method !== "POST") {
+    return res.status(405).json({ error: "Method not allowed" });
+  }
+
+  try {
+    const { message } = req.body;
+
+    if (!message) {
+      return res.status(400).json({ error: "Message is required" });
+    }
+
+    const prompt = `
 You are an advanced financial transaction parser.
 
 Your task is to convert natural language into structured financial transactions.
@@ -7,64 +19,34 @@ The input may be Arabic or English.
 The input may contain multiple financial events.
 
 ----------------------------------------------------
-CORE INTELLIGENCE RULE
+CORE RULE
 ----------------------------------------------------
 
-Determine the DIRECTION of money:
+Determine money direction:
 
-- If money leaves the user → type = "expense"
-- If money enters the user → type = "income"
-- If money moves between user's own accounts → type = "transfer"
+- Money leaves user → expense
+- Money enters user → income
+- Money moves between user accounts → transfer
 
-Do NOT rely only on specific verbs.
 Understand meaning semantically.
-
-Examples:
-"I ate pizza for 500" → expense
-"My salary came" → income
-"I moved money between my accounts" → transfer
-
-----------------------------------------------------
-MULTIPLE TRANSACTIONS
-----------------------------------------------------
-
-If multiple financial events exist:
-Extract ALL of them separately.
+Do NOT rely only on verbs.
 
 ----------------------------------------------------
 CATEGORY SYSTEM
 ----------------------------------------------------
 
-Available categories and subcategories:
+Available categories:
 
 {
-  "food": ["pizza", "coffee", "restaurant", "lunch", "dinner"],
-  "utilities": ["electricity", "water", "internet"],
-  "shopping": ["clothes", "shoes", "electronics"],
-  "transport": ["uber", "taxi", "gas"],
+  "food": ["pizza","coffee","restaurant","lunch","dinner"],
+  "utilities": ["electricity","water","internet"],
+  "shopping": ["clothes","shoes","electronics"],
+  "transport": ["uber","taxi","gas"],
   "salary": ["salary"],
   "other": []
 }
 
-Rules:
-1) Match best fitting category + subcategory.
-2) If no subcategory matches but category is clear → use category + subcategory = null.
-3) If new logical subcategory appears → suggest it.
-4) If completely new category needed → suggest new category.
-
-----------------------------------------------------
-SUGGESTION SYSTEM
-----------------------------------------------------
-
-If new subcategory detected:
-Return:
-{
-  "suggestedCategory": "smoking",
-  "suggestedSubcategory": "vape"
-}
-
-If no suggestion needed:
-Return null for suggestions.
+If new subcategory detected, suggest it.
 
 ----------------------------------------------------
 OUTPUT FORMAT (STRICT JSON)
@@ -81,25 +63,64 @@ OUTPUT FORMAT (STRICT JSON)
     }
   ],
   "suggestion": {
-      "category": string | null,
-      "subcategory": string | null
+    "category": string | null,
+    "subcategory": string | null
   }
 }
 
-----------------------------------------------------
-RULES
-----------------------------------------------------
+Return JSON only.
+No markdown.
+No explanation.
 
-- Return JSON only.
-- No markdown.
-- No explanation.
-- Confidence 0 to 1.
-- Extract ALL numeric values.
-- Arabic and English supported.
-- Interpret written numbers.
-- Never assume salary unless explicitly mentioned.
-
-----------------------------------------------------
 MESSAGE:
 "${message}"
 `;
+
+    const response = await fetch(
+      "https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key=" +
+        process.env.GEMINI_API_KEY,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          contents: [
+            {
+              parts: [{ text: prompt }],
+            },
+          ],
+        }),
+      }
+    );
+
+    const data = await response.json();
+
+    if (!data.candidates || !data.candidates[0]) {
+      return res.status(500).json({
+        error: "Invalid AI response",
+        raw: data,
+      });
+    }
+
+    let text = data.candidates[0].content.parts[0].text;
+
+    // Remove markdown if model added it
+    text = text.replace(/```json/g, "").replace(/```/g, "").trim();
+
+    try {
+      const parsed = JSON.parse(text);
+      return res.status(200).json(parsed);
+    } catch (e) {
+      return res.status(500).json({
+        error: "AI did not return valid JSON",
+        raw: text,
+      });
+    }
+  } catch (error) {
+    return res.status(500).json({
+      error: "Server crashed",
+      details: error.message,
+    });
+  }
+}
