@@ -3,78 +3,101 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: "Method not allowed" });
   }
 
-  const {
-    message,
-    accounts = [],
-    defaultAccount = null,
-    categories = {},
-    autoExecuteThreshold = 0.9
-  } = req.body;
+  const { message, accounts = [], defaultAccount = null, categories = {} } = req.body;
 
   if (!message) {
     return res.status(400).json({ error: "Message is required" });
   }
 
-  try {
-    const systemPrompt = `
-You are a HIGH-PRECISION financial transaction extraction engine.
+  const API_KEY = process.env.GEMINI_API_KEY;
+
+  const URL =
+    "https://generativelanguage.googleapis.com/v1/models/gemini-2.5-pro:generateContent?key=" +
+    API_KEY;
+
+  const systemPrompt = `<< You are a deterministic financial transaction extraction engine.
+
+You MUST behave like a strict JSON compiler.
 
 CRITICAL RULES:
 
-1) The user sentence MAY contain MULTIPLE financial actions.
-2) You MUST extract EACH financial action as a SEPARATE transaction.
-3) NEVER merge unrelated amounts.
-4) NEVER ignore any number.
-5) If sentence contains 3 separate financial actions → output 3 objects.
+1) The sentence may contain MULTIPLE financial actions.
+2) You MUST extract EACH action as a SEPARATE transaction object.
+3) NEVER merge independent amounts.
+4) NEVER ignore any amount mentioned.
+5) Parse the FULL sentence before responding.
+6) DO NOT summarize.
+7) DO NOT interpret loosely.
+8) DO NOT hallucinate accounts or categories.
+9) Only use accounts provided in the Accounts list.
+10) Only suggest categories if they do NOT exist in provided Categories list.
+11) Return STRICT VALID JSON ONLY.
+12) No markdown.
+13) No explanations.
+14) No extra text.
+15) Output must be pure JSON parsable by JSON.parse.
 
-TRANSACTION TYPES:
+--------------------------------
+SUPPORTED TYPES:
+
 - expense
 - income
-- transfer (ONLY if clearly internal between user accounts)
+- transfer
 
-ACCOUNTS AVAILABLE:
-${JSON.stringify(accounts)}
+--------------------------------
+TRANSFER LOGIC (STRICT):
 
-DEFAULT ACCOUNT:
-${defaultAccount}
+A transfer ONLY exists if BOTH:
+- source account exists
+- destination account exists
 
-CATEGORIES AVAILABLE:
-${JSON.stringify(categories)}
+If:
+- source only → expense
+- destination only → income
+- neither → use verb meaning
 
-ACCOUNT LOGIC:
+Example:
+"I bought pizza and paid with CIB"
+→ expense, sourceAccount = CIB
 
-- If TWO known accounts mentioned → transfer
-- If ONE known account mentioned:
-    expense → sourceAccount = mentioned
-    income → destinationAccount = mentioned
-- If NO account mentioned:
-    expense → sourceAccount = defaultAccount
-    income → destinationAccount = defaultAccount
+"I transferred 1000 from HSBC to CIB"
+→ transfer
 
-IMPORTANT:
-Mentioning payment method (e.g., "paid with CIB") is NOT transfer.
+--------------------------------
+ACCOUNT MATCHING:
 
-TRANSFER RULES:
-- If both source AND destination exist → transfer
-- If only source exists → expense
-- If only destination exists → income
+- Match EXACT or fuzzy match from provided Accounts list.
+- Do NOT create new account names.
+- If account not found in provided list → ignore it.
 
+--------------------------------
 CATEGORY RULES:
-- Use closest matching existing category/subcategory
-- ONLY suggest new category/subcategory if NOT already existing
-- Do NOT suggest existing ones
 
-LANGUAGE:
-- Support Arabic and English
-- Support written numbers and numeric digits
+- Use closest match from provided Categories.
+- If subcategory exists → use it.
+- If clearly identifiable subcategory missing → suggest it.
+- If category missing entirely → suggest new category.
+- NEVER suggest category or subcategory that already exists.
 
-STRICT OUTPUT RULES:
-- Return STRICT JSON
-- NO markdown
-- NO explanation
-- NO backticks
+--------------------------------
+MULTI-AMOUNT RULES:
 
-FORMAT:
+If sentence contains:
+- separate actions → separate transaction objects
+- combined action (e.g., "100 plus 50 for same thing") → sum only if clearly same action
+- otherwise → separate
+
+--------------------------------
+LANGUAGE SUPPORT:
+
+- Arabic and English supported.
+- Eastern Arabic numerals supported.
+- Written numbers supported (English and Arabic).
+- Slang financial verbs supported.
+- Detect context meaning (e.g., "I ate pizza for 50" = expense).
+
+--------------------------------
+OUTPUT FORMAT (STRICT):
 
 {
   "transactions": [
@@ -93,36 +116,64 @@ FORMAT:
     "subcategory": string | null
   }
 }
-`;
 
-    const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+If no transactions found:
+{
+  "transactions": [],
+  "suggestion": {
+    "category": null,
+    "subcategory": null
+  }
+} >>`;
+
+  try {
+    const response = await fetch(URL, {
       method: "POST",
       headers: {
-        "Authorization": `Bearer ${process.env.OPENROUTER_API_KEY}`,
         "Content-Type": "application/json"
       },
       body: JSON.stringify({
-        model: "qwen/qwen3-4b:free",
-        temperature: 0,
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: message }
-        ]
+        system_instruction: {
+          parts: [{ text: systemPrompt }]
+        },
+        contents: [
+          {
+            parts: [
+              {
+                text: `
+User Speech:
+"${message}"
+
+Accounts:
+${JSON.stringify(accounts)}
+
+Default Account:
+${defaultAccount}
+
+Categories:
+${JSON.stringify(categories)}
+`
+              }
+            ]
+          }
+        ],
+        generationConfig: {
+          temperature: 0.05,
+          response_mime_type: "application/json"
+        }
       })
     });
 
     const data = await response.json();
 
-    if (!data?.choices?.[0]?.message?.content) {
+    if (!data?.candidates?.[0]?.content?.parts?.[0]?.text) {
       return res.status(500).json({
         error: "Invalid AI response",
         raw: data
       });
     }
 
-    let aiText = data.choices[0].message.content.trim();
-
-    // Remove accidental markdown
+    let aiText = data.candidates[0].content.parts[0].text.trim();
     aiText = aiText.replace(/```json|```/g, "").trim();
 
     let parsed;
@@ -139,7 +190,7 @@ FORMAT:
 
   } catch (error) {
     return res.status(500).json({
-      error: "Internal server error",
+      error: "Server error",
       details: error.message
     });
   }
