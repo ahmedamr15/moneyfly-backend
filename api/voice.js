@@ -1,4 +1,4 @@
-import { GoogleGenAI } from "@google/genai";
+const { GoogleGenAI } = require("@google/genai");
 
 const ai = new GoogleGenAI({
   apiKey: process.env.GEMINI_API_KEY,
@@ -6,53 +6,11 @@ const ai = new GoogleGenAI({
 
 const MODEL = "models/gemini-2.5-flash";
 
-/*
---------------------------------------------------
-DUMP CATEGORIES (Temporary until app sends them)
---------------------------------------------------
-*/
-
-const EXISTING_CATEGORIES = [
-  {
-    name: "Food",
-    subcategories: ["Pizza", "Coffee", "Restaurant"]
-  },
-  {
-    name: "Smoking",
-    subcategories: ["Cigarettes"]
-  },
-  {
-    name: "Shopping",
-    subcategories: ["Clothes", "Shoes"]
-  },
-  {
-    name: "Utilities",
-    subcategories: ["Electricity", "Water", "Gas"]
-  },
-  {
-    name: "Salary",
-    subcategories: ["Main Salary"]
-  },
-  {
-    name: "Other",
-    subcategories: []
-  }
-];
-
-const REJECTED_SUGGESTIONS = [];
-
-/*
---------------------------------------------------
-HELPER: Clean AI Markdown if returned
---------------------------------------------------
-*/
-
 function cleanJSON(text) {
   if (!text) return null;
 
   let cleaned = text.trim();
 
-  // Remove markdown blocks if exist
   if (cleaned.startsWith("```")) {
     cleaned = cleaned.replace(/```json/g, "")
                      .replace(/```/g, "")
@@ -62,13 +20,8 @@ function cleanJSON(text) {
   return cleaned;
 }
 
-/*
---------------------------------------------------
-VOICE ENDPOINT
---------------------------------------------------
-*/
+module.exports = async function handler(req, res) {
 
-export default async function handler(req, res) {
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" });
   }
@@ -82,62 +35,21 @@ export default async function handler(req, res) {
   try {
 
     const prompt = `
-You are a financial transaction parser.
-
 Return STRICT JSON only.
-No markdown.
-No explanation.
-No extra text.
 
-Existing categories:
-${JSON.stringify(EXISTING_CATEGORIES)}
+User message:
+"${message}"
 
-Rejected suggestions:
-${JSON.stringify(REJECTED_SUGGESTIONS)}
-
-Rules:
-1. Extract ALL financial transactions.
-2. If multiple amounts → create multiple transactions.
-3. Detect expense or income.
-4. Match category and subcategory if exists.
-5. If subcategory does not exist but category exists → suggest it.
-6. If category does not exist → suggest new category.
-7. Detect language.
-
-Return JSON in this format:
-
+Return format:
 {
   "transactions": [
     {
       "type": "expense | income",
       "amount": number,
-      "currency": "EGP",
-      "category": {
-        "name": string,
-        "exists": true | false
-      },
-      "subcategory": {
-        "name": string,
-        "exists": true | false
-      },
-      "note": string
+      "category": string
     }
-  ],
-  "categorySuggestions": [
-    {
-      "category": string,
-      "subcategory": string
-    }
-  ],
-  "meta": {
-    "confidence": number,
-    "language": "ar | en",
-    "multipleTransactions": true | false
-  }
+  ]
 }
-
-User message:
-"${message}"
 `;
 
     const response = await ai.models.generateContent({
@@ -151,7 +63,7 @@ User message:
 
     if (!cleaned) {
       return res.status(500).json({
-        error: "AI returned empty response",
+        error: "Empty AI response",
         raw: rawText
       });
     }
@@ -162,7 +74,7 @@ User message:
       parsed = JSON.parse(cleaned);
     } catch (err) {
       return res.status(500).json({
-        error: "AI did not return valid JSON",
+        error: "Invalid AI response",
         raw: rawText
       });
     }
@@ -177,4 +89,4 @@ User message:
     });
 
   }
-}
+};
