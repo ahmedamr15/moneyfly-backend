@@ -17,9 +17,9 @@ export default async function handler(req, res) {
 
   const API_KEY = process.env.GEMINI_API_KEY;
 
-  const URL =
-    "https://generativelanguage.googleapis.com/v1/models/gemini-2.5-pro:generateContent?key=" +
-    API_KEY;
+  const MODEL_NAME = "gemini-2.5-pro";
+  const URL = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL_NAME}:generateContent?key=${API_KEY}`;
+
 
   const prompt = `
 You are a strict financial transaction extraction engine.
