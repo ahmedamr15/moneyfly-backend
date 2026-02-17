@@ -1,10 +1,6 @@
-import { GoogleGenAI } from "@google/genai";
+const { GoogleGenAI } = require("@google/genai");
 
-const ai = new GoogleGenAI({
-  apiKey: process.env.GEMINI_API_KEY
-});
-
-export default async function handler(req, res) {
+module.exports = async function (req, res) {
   try {
     if (req.method !== "POST") {
       return res.status(405).json({ error: "Method not allowed" });
@@ -16,14 +12,17 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: "Message is required" });
     }
 
+    const ai = new GoogleGenAI({
+      apiKey: process.env.GEMINI_API_KEY
+    });
+
     const response = await ai.models.generateContent({
       model: "gemini-3-flash-preview",
       contents: `
-Extract transaction information from this sentence:
-
+Extract transaction info from this:
 "${message}"
 
-Return ONLY valid JSON in this format:
+Return ONLY valid JSON:
 {
   "type": "expense | income",
   "amount": number,
@@ -34,15 +33,9 @@ Return ONLY valid JSON in this format:
 
     const text = response.text;
 
-    try {
-      const json = JSON.parse(text);
-      return res.status(200).json(json);
-    } catch (err) {
-      return res.status(500).json({
-        error: "AI response invalid",
-        raw: text
-      });
-    }
+    const parsed = JSON.parse(text);
+
+    return res.status(200).json(parsed);
 
   } catch (error) {
     return res.status(500).json({
@@ -50,4 +43,4 @@ Return ONLY valid JSON in this format:
       details: error.message
     });
   }
-}
+};
