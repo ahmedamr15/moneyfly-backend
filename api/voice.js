@@ -1,106 +1,89 @@
-const systemPrompt = `
-You are an advanced financial transaction extraction engine.
+export default async function handler(req, res) {
+  if (req.method !== "POST") {
+    return res.status(405).json({ error: "Method not allowed" });
+  }
 
-Your job is to analyze the FULL user sentence and extract ALL financial actions.
+  const {
+    message,
+    accounts = [],
+    defaultAccount = null,
+    categories = {}
+  } = req.body;
 
-CRITICAL GLOBAL RULES:
+  if (!message) {
+    return res.status(400).json({ error: "Message is required" });
+  }
 
-1) The sentence may contain MULTIPLE financial actions.
-2) You MUST extract EACH action as a SEPARATE transaction object.
-3) NEVER merge unrelated amounts.
-4) NEVER ignore any number.
-5) If there are 3 amounts → return 3 transaction objects.
-6) Parse the ENTIRE sentence before responding.
-7) DO NOT summarize.
-8) DO NOT skip partial actions.
-9) Output STRICT JSON ONLY. No markdown. No explanation.
+  try {
 
---------------------------------------------------
-SUPPORTED TRANSACTION TYPES:
+    const systemPrompt = `
+You are a financial transaction extraction engine.
 
-- "expense"  → money leaving the user
-- "income"   → money coming to the user
-- "transfer" → internal movement between user accounts ONLY
+CRITICAL RULES:
 
---------------------------------------------------
-TRANSFER RESOLUTION LOGIC:
+1) The user sentence may contain MULTIPLE financial actions.
+2) You MUST extract EACH financial action as a SEPARATE transaction object.
+3) NEVER merge separate actions.
+4) NEVER ignore any amount.
+5) If sentence contains 3 financial actions → output 3 transactions.
+6) Analyze the FULL sentence before responding.
 
-Use these exact rules:
+TRANSACTION TYPES:
+- expense
+- income
+- transfer (ONLY if internal between user accounts)
 
-• If BOTH sourceAccount AND destinationAccount are from the provided accounts list → type = "transfer"
-
-• If ONLY sourceAccount exists → type = "expense"
-
-• If ONLY destinationAccount exists → type = "income"
-
-• If no accounts mentioned → determine type from verb meaning
-
---------------------------------------------------
 ACCOUNTS AVAILABLE:
 ${JSON.stringify(accounts)}
 
-Only match accounts from this list.
-If a name is mentioned but not in this list → ignore it.
+DEFAULT ACCOUNT:
+${defaultAccount}
 
-Account matching must be tolerant to:
-- Case differences
-- Spacing differences
-- Arabic phonetic spelling
-- Letter-by-letter spelling (e.g., C I B)
-
---------------------------------------------------
 CATEGORIES AVAILABLE:
 ${JSON.stringify(categories)}
 
-Rules:
-- Always choose the MOST specific matching category.
-- If subcategory exists → assign it.
-- If no matching category → set category null and provide suggestion.
+ACCOUNT LOGIC:
 
---------------------------------------------------
-CATEGORY DETECTION RULES:
+- If TWO accounts mentioned → transfer
+  sourceAccount = first
+  destinationAccount = second
 
-Match based on MEANING, not only verbs.
+- If ONE account mentioned:
+   - If expense → sourceAccount = mentioned
+   - If income → destinationAccount = mentioned
 
-Examples of expense indicators:
-ate, bought, paid, purchased, spent, gave, drank, ordered,
-اشتريت, دفعت, صرفت, اكلت, شربت, طلبت, جبت, عملت
+- If NO account mentioned:
+   - expense → sourceAccount = defaultAccount
+   - income → destinationAccount = defaultAccount
 
-Examples of income indicators:
-received, got, earned, salary, paid to me,
-استلمت, قبضت, جالي, اتحول لي, دخل لي
+IMPORTANT:
+- Mentioning payment method is NOT transfer.
+  Example:
+  "I bought pizza and paid with CIB"
+  → expense, sourceAccount = CIB
 
---------------------------------------------------
+TRANSFER RULES:
+- If transfer but missing destination → treat as expense
+- If transfer but missing source → treat as income
+
 AMOUNT RULES:
+- Support Arabic & English numbers.
+- Extract ALL amounts.
+- If "20 on pizza and 30 on coffee" → two separate transactions.
+- If "200 plus 300" in SAME action → sum only if clearly same action.
 
-- Support Arabic and English numbers.
-- Support written numbers (fifty, twenty, خمسين, مية, ألف, etc.)
-- Support Arabic-Indic digits.
-- If amounts are clearly separate actions → separate objects.
-- If multiple amounts belong to same action → sum them.
+CATEGORY RULES:
+- Match closest existing category.
+- If subcategory missing but clear → suggest subcategory.
+- If category missing → suggest new category.
+- Do NOT invent unrelated categories.
 
---------------------------------------------------
-MULTI-ACTION SEGMENTATION:
+RETURN STRICT JSON ONLY.
+NO explanation.
+NO markdown.
+NO backticks.
 
-You MUST split by logical actions.
-
-Example:
-"I spent 50 on pizza and 30 on coffee and received 1000 salary"
-
-→ 3 separate transactions.
-
---------------------------------------------------
-CONFIDENCE RULES:
-
-Return confidence between 0.0 and 1.0
-
-1.0 = completely certain  
-0.9+ = very strong match  
-0.7–0.8 = moderate match  
-<0.7 = uncertain  
-
---------------------------------------------------
-STRICT OUTPUT FORMAT:
+FORMAT:
 
 {
   "transactions": [
@@ -120,3 +103,62 @@ STRICT OUTPUT FORMAT:
   }
 }
 `;
+
+    async function callGemini() {
+      const response = await fetch(
+        "https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key=" +
+          process.env.GEMINI_API_KEY,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            contents: [
+              {
+                parts: [{ text: systemPrompt.replace('${message}', message) }]
+              }
+            ]
+          })
+        }
+      );
+
+      if (response.status === 429) {
+        await new Promise(r => setTimeout(r, 3000));
+        return callGemini();
+      }
+
+      return response.json();
+    }
+
+    const data = await callGemini();
+
+    if (!data?.candidates?.[0]?.content?.parts?.[0]?.text) {
+      return res.status(500).json({
+        error: "Invalid AI response",
+        raw: data
+      });
+    }
+
+    let aiText = data.candidates[0].content.parts[0].text;
+
+    // Clean markdown if returned
+    aiText = aiText.replace(/```json|```/g, "").trim();
+
+    let parsed;
+    try {
+      parsed = JSON.parse(aiText);
+    } catch (e) {
+      return res.status(500).json({
+        error: "AI did not return valid JSON",
+        raw: aiText
+      });
+    }
+
+    return res.status(200).json(parsed);
+
+  } catch (error) {
+    return res.status(500).json({
+      error: "Server error",
+      details: error.message
+    });
+  }
+}
