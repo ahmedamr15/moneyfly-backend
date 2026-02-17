@@ -50,6 +50,11 @@ STRICT RULES:
 - If neither category nor subcategory exists → suggest new category AND subcategory.
 - NEVER suggest a category or subcategory that already exists in the provided list.
 - If everything matches existing structure → suggestion must be null.
+IMPORTANT:
+- Do NOT hallucinate categories.
+- Do NOT invent categories randomly.
+- If unsure → use "other" and no suggestion.
+- Only suggest when high semantic confidence (>0.8).
 
 Suggestion format rules:
 
