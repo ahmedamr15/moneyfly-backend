@@ -16,9 +16,8 @@ export default async function handler(req, res) {
   }
 
   const API_KEY = process.env.GEMINI_API_KEY;
-
-  // استخدم Gemini 1.5 Flash لأنه الأكثر استقراراً في الكوتا المجانية
-const URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${API_KEY}`;
+  // استخدام موديل Gemini 2.0 Flash المتاح في حسابك
+  const URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${API_KEY}`;
 
   const prompt = `
 You are a strict financial transaction extraction engine.
