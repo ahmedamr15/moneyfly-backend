@@ -15,13 +15,11 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: "Message is required" });
   }
 
-  const API_KEY = process.env.GEMINI_API_KEY;
+/ استخدام مفتاح Gemini API
+const API_KEY = process.env.GEMINI_API_KEY;
 
-// مفتاح OpenRouter من إعدادات Vercel
-const API_KEY = process.env.OPENROUTER_API_KEY;
-
-// الـ URL الثابت لـ OpenRouter
-const URL = "https://openrouter.ai/api/v1/chat/completions";
+// URL الخاص بـ Gemini API المباشر
+const URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${API_KEY}`;
 
   const prompt = `
 You are a strict financial transaction extraction engine.
