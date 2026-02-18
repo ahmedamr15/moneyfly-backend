@@ -38,6 +38,18 @@ CRITICAL RULES:
 5) Parse FULL sentence before responding.
 6) Return STRICT JSON only.
 7) NEVER return markdown or explanation.
+8) Amount MUST ALWAYS be a positive number.
+9) NEVER return negative amounts.
+10) Transaction type defines money direction, NOT the sign.
+11) For income:
+    - destinationAccount MUST be filled.
+    - sourceAccount MUST be null.
+12) For expense:
+    - sourceAccount MUST be filled.
+    - destinationAccount MUST be null.
+13) If an installment or loan name is detected,
+    you MUST create installment_payment or loan_payment transaction.
+    Even if no amount is specified.
 
 ---------------------------------------
 SUPPORTED TYPES:
