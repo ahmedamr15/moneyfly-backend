@@ -1,121 +1,95 @@
-const systemPrompt = `
-You are a STRICT financial transaction extraction engine.
+module.exports = async function (req, res) {
 
-Your job:
-Convert user speech into structured financial transactions.
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
-========================
-GLOBAL RULES
-========================
+  if (req.method === "OPTIONS") return res.status(200).end();
+  if (req.method !== "POST") return res.status(405).json({ error: "Use POST" });
 
-1) The sentence may contain MULTIPLE financial actions.
-2) Extract EACH action as a SEPARATE transaction object.
+  try {
+
+    const body = req.body || {};
+    const message = body.message;
+    const accounts = body.accounts || [];
+    const defaultAccount = body.defaultAccount || null;
+    const categories = body.categories || {};
+
+    if (!message) {
+      return res.status(400).json({ error: "Message is required" });
+    }
+
+    if (!process.env.GROQ_API_KEY) {
+      return res.status(500).json({ error: "Missing GROQ_API_KEY" });
+    }
+
+    const systemPrompt = `
+You are a HIGH-PRECISION financial transaction extraction engine.
+
+CRITICAL EXECUTION RULES:
+
+1) The sentence may contain MULTIPLE independent financial actions.
+2) You MUST extract EACH action separately.
 3) NEVER merge unrelated amounts.
-4) NEVER ignore any number.
-5) NEVER invent numbers.
-6) NEVER invent transactions.
-7) If no amount exists → return empty transactions array.
-8) Parse the FULL sentence before responding.
-9) Return STRICT JSON only. No markdown. No explanation.
+4) NEVER ignore any numeric value.
+5) If 3 amounts exist → return 3 transaction objects.
+6) Parse the FULL sentence before responding.
 
-========================
-TRANSACTION TYPES
-========================
-Allowed types:
+SUPPORTED TYPES:
 - expense
 - income
-- transfer
+- transfer (ONLY if internal between user accounts)
 
-========================
-AMOUNT RULES
-========================
+ACCOUNT RULES:
 
-- Extract exact numeric values only.
-- Support Arabic numbers (50, 200).
-- Support Arabic words (خمسين, مية, ألف, ألفين).
-- Support English words (fifty, one thousand).
-- If 3 amounts mentioned → return 3 transactions.
-- If multiple amounts belong to same action (100 plus 50) → sum them.
-- If separate actions → separate objects.
-
-========================
-ACCOUNT RULES
-========================
-
-User Accounts:
+Available Accounts:
 ${JSON.stringify(accounts)}
 
 Default Account:
 ${defaultAccount}
 
-Account Logic:
+• If TWO known accounts appear → transfer
+   sourceAccount = first mentioned
+   destinationAccount = second mentioned
 
-1) If TWO accounts mentioned → transfer
-   - sourceAccount = first mentioned
-   - destinationAccount = second mentioned
+• If ONE known account appears:
+   - If context is payment → expense (sourceAccount = mentioned)
+   - If context is receiving → income (destinationAccount = mentioned)
 
-2) If ONE account mentioned:
-   - expense → sourceAccount = mentioned
-   - income → destinationAccount = mentioned
-
-3) If NO account mentioned:
+• If NO account mentioned:
    - expense → sourceAccount = defaultAccount
    - income → destinationAccount = defaultAccount
 
-4) Mentioning payment method is NOT transfer.
-Example:
-"I bought pizza and paid with CIB"
-→ expense with sourceAccount=CIB
+• Saying "paid with CIB" is NOT transfer. It is expense using CIB.
 
-5) If transfer mentioned but only source exists → treat as expense.
-6) If transfer mentioned but only destination exists → treat as income.
+CATEGORY RULES:
 
-7) Match ONLY accounts from provided list.
-If unknown account → ignore it.
-
-========================
-CATEGORY RULES
-========================
-
-Available Categories & Subcategories:
+Existing Categories:
 ${JSON.stringify(categories)}
 
-1) Use closest matching category from existing list.
-2) If subcategory clearly identifiable but missing → suggest subcategory.
-3) If category clearly missing → suggest new category.
-4) NEVER suggest category if already exists.
-5) If suggestion exists → fill suggestion object.
-6) If no suggestion needed → suggestion = null.
+• Use closest existing category.
+• Use closest existing subcategory.
+• DO NOT suggest category/subcategory if already exists.
+• If clearly new subcategory → return suggestion.
+• If clearly new category → return suggestion.
 
-Examples:
-- pizza → food → pizza
-- coffee → food → coffee
-- salary → salary
-- electricity → utilities
-- vape → if smoking category exists → suggest subcategory vape
-- if smoking category missing → suggest category smoking
+TRANSFER CORRECTION RULE:
+If transfer detected but:
+   - only sourceAccount exists → treat as expense
+   - only destinationAccount exists → treat as income
 
-========================
-TRANSFER VS EXPENSE CLARITY
-========================
+LANGUAGE:
+Support Arabic & English.
+Support Arabic digits & English digits.
+Support written numbers.
 
-"حولت من HSBC إلى CIB" → transfer
-"دفعت بال CIB" → expense
-"استلمت في CIB" → income
+STRICT OUTPUT:
+Return ONLY valid JSON.
+No markdown.
+No explanation.
+No comments.
 
-========================
-CONFIDENCE RULE
-========================
-
-Return confidence between 0 and 1:
-- 1.0 = extremely clear
-- 0.9 = very clear
-- 0.7 = moderate certainty
-- <0.7 = weak detection
-
-========================
-FINAL OUTPUT FORMAT
-========================
+FORMAT:
 
 {
   "transactions": [
@@ -134,10 +108,66 @@ FINAL OUTPUT FORMAT
     "subcategory": string or null
   }
 }
-
-REMEMBER:
-- No markdown
-- No explanation
-- No extra text
-- JSON only
 `;
+
+    const aiResponse = await fetch(
+      "https://api.groq.com/openai/v1/chat/completions",
+      {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${process.env.GROQ_API_KEY}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          model: "llama-3.1-8b-instant",
+          messages: [
+            { role: "system", content: systemPrompt },
+            { role: "user", content: message }
+          ],
+          temperature: 0,
+          response_format: { type: "json_object" }
+        })
+      }
+    );
+
+    const data = await aiResponse.json();
+
+    if (data.error) {
+      return res.status(400).json({
+        error: "Groq API Error",
+        details: data.error
+      });
+    }
+
+    const content = data?.choices?.[0]?.message?.content;
+
+    if (!content) {
+      return res.status(500).json({
+        error: "Invalid AI response",
+        raw: data
+      });
+    }
+
+    let parsed;
+
+    try {
+      parsed = JSON.parse(content);
+    } catch (e) {
+      return res.status(500).json({
+        error: "AI did not return valid JSON",
+        raw: content
+      });
+    }
+
+    if (!parsed.transactions) parsed.transactions = [];
+    if (!parsed.suggestion) parsed.suggestion = { category: null, subcategory: null };
+
+    return res.status(200).json(parsed);
+
+  } catch (error) {
+    return res.status(500).json({
+      error: "Function Crashed",
+      message: error.message
+    });
+  }
+};
