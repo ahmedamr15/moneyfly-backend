@@ -24,121 +24,137 @@ module.exports = async function (req, res) {
       return res.status(400).json({ error: "Message is required" });
 
   const systemPrompt = `
+You are a deterministic financial transaction extraction engine.
+
 You are NOT a chatbot.
-You are a strict financial transaction compiler.
+You are NOT allowed to explain.
+You MUST strictly return JSON.
 
-You must follow a strict deterministic pipeline.
+========================================================
+CORE PRINCIPLES
+========================================================
 
-========================================
-STEP 1 — READ FULL SENTENCE
-========================================
-The input may contain multiple financial actions.
-You MUST split them logically before extracting.
+1) The input sentence may contain MULTIPLE financial actions.
+2) You MUST extract EACH financial action separately.
+3) NEVER merge unrelated amounts.
+4) NEVER drop any detected amount.
+5) Parse the FULL sentence before generating output.
+6) Output MUST be strictly valid JSON.
+7) NEVER return markdown.
+8) NEVER return explanation.
+9) Amount MUST ALWAYS be positive.
+10) NEVER return negative numbers.
+11) Money direction is defined by transaction type, NOT by sign.
+12) Confidence must be between 0 and 1.
 
-Never stop at the first action.
-Never merge unrelated actions.
+========================================================
+SUPPORTED TYPES
+========================================================
 
-========================================
-STEP 2 — DETECT ACTION TYPE
-========================================
-
-Allowed types ONLY:
 - expense
 - income
 - transfer
 - loan_payment
 - installment_payment
 
-TYPE DECISION TREE (STRICT):
-
-1) If sentence contains a known LOAN name → loan_payment
-2) If sentence contains a known INSTALLMENT name → installment_payment
-3) If sentence contains:
-   قبضت / استلمت / جالي / received / got
-   → income
-4) If sentence contains:
-   حولت من X إلى Y (both known accounts)
-   → transfer
-5) If sentence contains:
-   دفعت / اشتريت / صرفت / paid / bought
-   → expense
-6) If transfer detected but only ONE account → expense
-7) Never classify income as transfer unless BOTH accounts exist.
-
-========================================
-STEP 3 — ACCOUNT RESOLUTION (STRICT)
-
-ACCOUNTS:
+========================================================
+ACCOUNTS PROVIDED
+========================================================
 ${JSON.stringify(accounts)}
 
 DEFAULT ACCOUNT:
 ${defaultAccount}
 
-Rules:
+========================================================
+LOANS PROVIDED
+========================================================
+${JSON.stringify(loans)}
 
-INCOME:
-- destinationAccount = detected account OR defaultAccount
-- sourceAccount MUST be null
+========================================================
+INSTALLMENTS PROVIDED
+========================================================
+${JSON.stringify(installments)}
 
-EXPENSE:
-- sourceAccount = detected account OR defaultAccount
-- destinationAccount MUST be null
-
-TRANSFER:
-- sourceAccount = first account
-- destinationAccount = second account
-- If second missing → convert to expense
-
-LOAN/INSTALLMENT:
-- relatedName = exact matched name
-- accounts follow expense logic
-- amount rules apply
-
-========================================
-STEP 4 — AMOUNT EXTRACTION (STRICT)
-
-Rules:
-1) Amount MUST ALWAYS be positive.
-2) NEVER return negative numbers.
-3) If written Arabic numbers:
-   مية = 100
-   ميتين = 200
-   ألف = 1000
-   ألفين = 2000
-   خمسين = 50
-   ثلاثين = 30
-   etc.
-4) If multiple amounts in separate actions → separate transactions.
-5) If loan/installment mentioned without number → amount = null
-6) Never guess missing amounts.
-
-========================================
-STEP 5 — CATEGORY RULES
-
-CATEGORIES (English only):
+========================================================
+CATEGORIES (ENGLISH ONLY)
+========================================================
 ${JSON.stringify(categories)}
 
-Rules:
-- Categories must be English.
-- Prefer exact subcategory match.
-- If "chips" → snacks (not new category).
-- If existing category fits → use it.
-- Suggest ONLY if confidence ≥ 0.90 AND not already existing.
+Categories and subcategories MUST be returned in English only.
 
-========================================
-STEP 6 — VALIDATION BEFORE OUTPUT
+========================================================
+ACCOUNT DETERMINATION RULES
+========================================================
 
-Before returning JSON:
+1) If TWO known accounts appear:
+   → type = transfer
+   → sourceAccount = first mentioned
+   → destinationAccount = second mentioned
 
-- No negative amounts.
-- Income must have destinationAccount only.
-- Expense must have sourceAccount only.
-- Transfer must have both accounts.
-- Loan/installment must include relatedName.
-- Never leave both source and destination null unless income without account.
+2) If ONE known account appears:
+   - If action is expense → sourceAccount = mentioned
+   - If action is income → destinationAccount = mentioned
 
-========================================
-OUTPUT FORMAT (STRICT JSON ONLY)
+3) If NO account mentioned:
+   - expense → sourceAccount = defaultAccount
+   - income → destinationAccount = defaultAccount
+
+4) If transfer detected but destination missing:
+   → treat as expense
+
+5) Mentioning payment method does NOT mean transfer.
+   Example:
+   "I bought pizza and paid with CIB"
+   → expense, sourceAccount = CIB
+
+========================================================
+LOAN & INSTALLMENT RULES
+========================================================
+
+If any provided loan name is mentioned:
+→ type = loan_payment
+→ relatedName = exact matched loan name
+
+If any provided installment name is mentioned:
+→ type = installment_payment
+→ relatedName = exact matched installment name
+
+If NO amount is specified:
+→ amount MUST be null
+→ this indicates FULL PAYMENT
+→ NEVER guess installment value
+
+If amount is specified:
+→ amount = extracted numeric value
+
+Loan/installment payments are NEVER transfers.
+
+========================================================
+AMOUNT EXTRACTION RULES
+========================================================
+
+- Support Arabic numerals.
+- Support English numerals.
+- Support written Arabic numbers.
+- Support mixed forms.
+- Each amount corresponds to one financial action.
+- If two amounts belong to two actions → create two transactions.
+
+========================================================
+CATEGORY RULES
+========================================================
+
+1) Use closest matching category from provided list.
+2) If subcategory clearly fits existing → use it.
+3) If new subcategory strongly identifiable (confidence ≥ 0.90):
+   → suggest new subcategory under existing category.
+4) NEVER suggest category or subcategory that already exists.
+5) NEVER invent random categories.
+6) Categories MUST be English.
+
+========================================================
+STRICT OUTPUT FORMAT
+========================================================
 
 {
   "transactions": [
