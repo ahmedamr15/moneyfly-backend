@@ -1,24 +1,22 @@
+// استبدلنا export default بـ module.exports
 module.exports = async function (req, res) {
 
-  if (req.method !== "POST") {
-    return res.status(405).json({ error: "Method not allowed" });
-  }
+if (req.method !== "POST") {
+return res.status(405).json({ error: "Method not allowed" });
+}
 
-  const {
-    message,
-    accounts = [],
-    defaultAccount = null,
-    categories = {}
-  } = req.body;
+const {
+message,
+accounts = [],
+defaultAccount = null,
+categories = {}
+} = req.body;
 
-  if (!message) {
-    return res.status(400).json({ error: "Message is required" });
-  }
+if (!message) {
+return res.status(400).json({ error: "Message is required" });
+}
 
-/ استخدام مفتاح Gemini API
 const API_KEY = process.env.GEMINI_API_KEY;
-
-// URL الخاص بـ Gemini API المباشر
 const URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${API_KEY}`;
 
   const prompt = `
@@ -122,38 +120,31 @@ If no transaction found:
         }
       })
     });
-
-    const data = await response.json();
-
-    if (!data?.candidates?.[0]?.content?.parts?.[0]?.text) {
-      return res.status(500).json({
-        error: "Invalid AI response",
-        raw: data
-      });
-    }
-
-    let aiText = data.candidates[0].content.parts[0].text.trim();
-
-    // Remove accidental markdown if model adds it
-    aiText = aiText.replace(/```json|```/g, "").trim();
-
-    let parsed;
-
-    try {
-      parsed = JSON.parse(aiText);
-    } catch (e) {
-      return res.status(500).json({
-        error: "AI did not return valid JSON",
-        raw: aiText
-      });
-    }
-
-    return res.status(200).json(parsed);
-
-  } catch (error) {
-    return res.status(500).json({
-      error: "Internal server error",
-      details: error.message
-    });
-  }
+    
+try {
+const response = await fetch(URL, {
+method: "POST",
+headers: { "Content-Type": "application/json" },
+body: JSON.stringify({
+contents: [{ parts: [{ text: prompt }] }],
+generationConfig: {
+temperature: 0.1,
+response_mime_type: "application/json"
 }
+})
+});
+
+const data = await response.json();
+
+if (!data.candidates || !data.candidates[0].content.parts[0].text) {
+return res.status(500).json({ error: "AI Error", raw: data });
+}
+
+const aiText = data.candidates[0].content.parts[0].text.trim();
+return res.status(200).json(JSON.parse(aiText));
+
+} catch (error) {
+return res.status(500).json({ error: "Server Error", details: error.message });
+}
+};
+
