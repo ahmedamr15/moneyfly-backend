@@ -1,4 +1,5 @@
 module.exports = async function (req, res) {
+  // ===== CORS =====
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
@@ -18,10 +19,12 @@ module.exports = async function (req, res) {
       categories = {},
       loans = [],
       installments = []
-    } = req.body;
+    } = req.body || {};
 
     if (!message)
       return res.status(400).json({ error: "Message is required" });
+
+    // ================= SYSTEM PROMPT =================
 
     const systemPrompt = `
 You are a highly precise financial transaction extraction engine.
@@ -34,6 +37,7 @@ CRITICAL RULES:
 4) NEVER guess missing amounts.
 5) Parse FULL sentence before responding.
 6) Return STRICT JSON only.
+7) NEVER return markdown or explanation.
 
 ---------------------------------------
 SUPPORTED TYPES:
@@ -56,46 +60,48 @@ ${JSON.stringify(loans)}
 INSTALLMENTS:
 ${JSON.stringify(installments)}
 
-CATEGORIES:
+CATEGORIES (English only):
 ${JSON.stringify(categories)}
 
 ---------------------------------------
 ACCOUNT LOGIC:
 
-- Two known accounts → transfer
-- One account:
-   expense → sourceAccount
-   income → destinationAccount
-- No account:
-   expense → sourceAccount = defaultAccount
-   income → destinationAccount = defaultAccount
+- If TWO known accounts → transfer
+- If ONE account:
+    expense → sourceAccount
+    income → destinationAccount
+- If NO account:
+    expense → sourceAccount = defaultAccount
+    income → destinationAccount = defaultAccount
 
-If transfer missing destination → treat as expense
+If transfer missing destination → treat as expense.
 
 ---------------------------------------
 LOAN / INSTALLMENT RULES:
 
 If user mentions loan/installment name:
 
-If NO amount specified:
-  amount MUST be null
-  This indicates FULL PAYMENT
-  NEVER guess installment value
+- If NO amount specified:
+    amount MUST be null
+    This indicates FULL PAYMENT
+    NEVER guess installment value
 
-If amount specified:
-  amount = specified number
+- If amount specified:
+    amount = specified number
 
 Type must be:
 - loan_payment
 - installment_payment
 
+relatedName must contain the matched loan/installment name.
+
 ---------------------------------------
 CATEGORY RULES:
 
-- Categories must be English.
-- Prefer existing.
-- Suggest only if ≥ 0.90 confidence.
-- Never suggest existing.
+- Categories and subcategories MUST be English.
+- Prefer existing categories.
+- Suggest ONLY if confidence >= 0.90.
+- Never suggest existing categories/subcategories.
 
 ---------------------------------------
 AMOUNT RULES:
@@ -103,6 +109,7 @@ AMOUNT RULES:
 - Support Arabic & English numerals.
 - Support written Arabic numbers.
 - Multiple amounts → multiple transactions.
+- Never merge separate actions.
 
 ---------------------------------------
 OUTPUT FORMAT:
@@ -127,17 +134,20 @@ OUTPUT FORMAT:
 }
 `;
 
+    // ================= GROQ CALL =================
+
     const response = await fetch(
       "https://api.groq.com/openai/v1/chat/completions",
       {
         method: "POST",
         headers: {
-          Authorization: \`Bearer \${API_KEY}\`,
+          Authorization: `Bearer ${API_KEY}`,
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
           model: "llama-3.1-8b-instant",
           temperature: 0.1,
+          response_format: { type: "json_object" }, // يمنع markdown
           messages: [
             { role: "system", content: systemPrompt },
             { role: "user", content: message }
@@ -155,22 +165,23 @@ OUTPUT FORMAT:
       });
     }
 
-    const raw = data.choices?.[0]?.message?.content;
-    if (!raw)
+    const raw = data?.choices?.[0]?.message?.content;
+
+    if (!raw) {
       return res.status(500).json({
         error: "Invalid AI response",
         raw: data
       });
-
-    let cleaned = raw.replace(/```json|```/g, "").trim();
+    }
 
     let parsed;
+
     try {
-      parsed = JSON.parse(cleaned);
+      parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
     } catch (e) {
       return res.status(500).json({
         error: "AI did not return valid JSON",
-        raw: cleaned
+        raw
       });
     }
 
