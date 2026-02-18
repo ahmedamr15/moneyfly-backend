@@ -1,86 +1,122 @@
-export default async function handler(req, res) {
+module.exports = async function (req, res) {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
-  if (req.method !== "POST") {
-    return res.status(405).json({ error: "Method not allowed" });
-  }
+  if (req.method === "OPTIONS") return res.status(200).end();
+  if (req.method !== "POST")
+    return res.status(405).json({ error: "Use POST method" });
 
-  const {
-    message,
-    accounts = [],
-    defaultAccount = null,
-    categories = {}
-  } = req.body;
+  try {
+    const API_KEY = process.env.GROQ_API_KEY;
+    if (!API_KEY) throw new Error("Missing GROQ_API_KEY");
 
-  if (!message) {
-    return res.status(400).json({ error: "Message is required" });
-  }
+    const {
+      message,
+      accounts = [],
+      defaultAccount = null,
+      categories = {},
+      loans = [],
+      installments = []
+    } = req.body;
 
-  const API_KEY = process.env.GEMINI_API_KEY;
-  // استخدام موديل Gemini 2.0 Flash المتاح في حسابك
-  const URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${API_KEY}`;
+    if (!message)
+      return res.status(400).json({ error: "Message is required" });
 
-  const prompt = `
-You are a strict financial transaction extraction engine.
+    const systemPrompt = `
+You are a highly precise financial transaction extraction engine.
 
-You MUST return ONLY valid JSON.
-No markdown.
-No explanations.
-No backticks.
-No extra text.
-
---------------------------------
 CRITICAL RULES:
 
 1) The sentence may contain MULTIPLE financial actions.
-2) Extract EACH action as a SEPARATE transaction object.
-3) NEVER merge independent amounts.
-4) NEVER ignore any number.
-5) Parse the FULL sentence before responding.
-6) Only use accounts from provided list.
-7) Only suggest new category/subcategory if not already in provided categories.
-8) Do NOT hallucinate accounts or categories.
+2) Extract EACH action separately.
+3) NEVER merge unrelated amounts.
+4) NEVER guess missing amounts.
+5) Parse FULL sentence before responding.
+6) Return STRICT JSON only.
 
---------------------------------
-TRANSACTION TYPES:
+---------------------------------------
+SUPPORTED TYPES:
 - expense
 - income
 - transfer
+- loan_payment
+- installment_payment
 
---------------------------------
-TRANSFER LOGIC:
-
-- If BOTH source and destination accounts are mentioned → transfer.
-- If ONLY source mentioned → expense.
-- If ONLY destination mentioned → income.
-- If no account mentioned → use defaultAccount depending on type.
-
---------------------------------
-INPUT DATA:
-
-Speech:
-"${message}"
-
-Accounts:
+---------------------------------------
+ACCOUNTS:
 ${JSON.stringify(accounts)}
 
-Default Account:
+DEFAULT ACCOUNT:
 ${defaultAccount}
 
-Categories:
+LOANS:
+${JSON.stringify(loans)}
+
+INSTALLMENTS:
+${JSON.stringify(installments)}
+
+CATEGORIES:
 ${JSON.stringify(categories)}
 
---------------------------------
-RETURN FORMAT (STRICT JSON):
+---------------------------------------
+ACCOUNT LOGIC:
+
+- Two known accounts → transfer
+- One account:
+   expense → sourceAccount
+   income → destinationAccount
+- No account:
+   expense → sourceAccount = defaultAccount
+   income → destinationAccount = defaultAccount
+
+If transfer missing destination → treat as expense
+
+---------------------------------------
+LOAN / INSTALLMENT RULES:
+
+If user mentions loan/installment name:
+
+If NO amount specified:
+  amount MUST be null
+  This indicates FULL PAYMENT
+  NEVER guess installment value
+
+If amount specified:
+  amount = specified number
+
+Type must be:
+- loan_payment
+- installment_payment
+
+---------------------------------------
+CATEGORY RULES:
+
+- Categories must be English.
+- Prefer existing.
+- Suggest only if ≥ 0.90 confidence.
+- Never suggest existing.
+
+---------------------------------------
+AMOUNT RULES:
+
+- Support Arabic & English numerals.
+- Support written Arabic numbers.
+- Multiple amounts → multiple transactions.
+
+---------------------------------------
+OUTPUT FORMAT:
 
 {
   "transactions": [
     {
-      "type": "expense | income | transfer",
-      "amount": number,
+      "type": "expense | income | transfer | loan_payment | installment_payment",
+      "amount": number | null,
       "category": string | null,
       "subcategory": string | null,
       "sourceAccount": string | null,
       "destinationAccount": string | null,
+      "relatedName": string | null,
       "confidence": number
     }
   ],
@@ -89,60 +125,52 @@ RETURN FORMAT (STRICT JSON):
     "subcategory": string | null
   }
 }
-
-If no transaction found:
-{
-  "transactions": [],
-  "suggestion": {
-    "category": null,
-    "subcategory": null
-  }
-}
 `;
 
-  try {
-
-    const response = await fetch(URL, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        contents: [
-          {
-            parts: [
-              { text: prompt }
-            ]
-          }
-        ],
-        generationConfig: {
-          temperature: 0.05
-        }
-      })
-    });
+    const response = await fetch(
+      "https://api.groq.com/openai/v1/chat/completions",
+      {
+        method: "POST",
+        headers: {
+          Authorization: \`Bearer \${API_KEY}\`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          model: "llama-3.1-8b-instant",
+          temperature: 0.1,
+          messages: [
+            { role: "system", content: systemPrompt },
+            { role: "user", content: message }
+          ]
+        })
+      }
+    );
 
     const data = await response.json();
 
-    if (!data?.candidates?.[0]?.content?.parts?.[0]?.text) {
+    if (data.error) {
+      return res.status(400).json({
+        error: "Groq API Error",
+        details: data.error
+      });
+    }
+
+    const raw = data.choices?.[0]?.message?.content;
+    if (!raw)
       return res.status(500).json({
         error: "Invalid AI response",
         raw: data
       });
-    }
 
-    let aiText = data.candidates[0].content.parts[0].text.trim();
-
-    // Remove accidental markdown if model adds it
-    aiText = aiText.replace(/```json|```/g, "").trim();
+    let cleaned = raw.replace(/```json|```/g, "").trim();
 
     let parsed;
-
     try {
-      parsed = JSON.parse(aiText);
+      parsed = JSON.parse(cleaned);
     } catch (e) {
       return res.status(500).json({
         error: "AI did not return valid JSON",
-        raw: aiText
+        raw: cleaned
       });
     }
 
@@ -150,8 +178,8 @@ If no transaction found:
 
   } catch (error) {
     return res.status(500).json({
-      error: "Internal server error",
-      details: error.message
+      error: "Function crashed",
+      message: error.message
     });
   }
-}
+};
