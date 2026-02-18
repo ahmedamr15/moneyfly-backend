@@ -11,40 +11,39 @@ module.exports = async function (req, res) {
       method: "POST",
       headers: {
         "Authorization": `Bearer ${API_KEY}`,
-        "Content-Type": "application/json",
-        "HTTP-Referer": "https://moneyfly-app.com", // اختياري لترتيبك في OpenRouter
-        "X-Title": "Moneyfly App" 
+        "HTTP-Referer": "https://moneyfly.vercel.app", // اختياري
+        "X-Title": "Moneyfly", // اختياري
+        "Content-Type": "application/json"
       },
       body: JSON.stringify({
-        "model": "google/gemma-3-12b-it:free",
+        "model": "meta-llama/llama-3.2-3b-instruct:free",
         "messages": [
           {
             "role": "system",
-            "content": "You are an expert bilingual financial assistant (Arabic/English). Extract transaction details into a strict JSON format: {\"transactions\": [{\"type\": \"expense|income\", \"amount\": number, \"category\": string, \"item\": string}]}. Only return JSON."
+            "content": "You are a finance expert. Extract transactions into JSON: {\"transactions\": [{\"type\": \"expense|income\", \"amount\": number, \"category\": string, \"item\": string}]}. Support Arabic and English."
           },
           {
             "role": "user",
-            "content": [
-              {
-                "type": "text",
-                "text": req.body.message || "اشتريت قهوة بـ 30 جنيه"
-              }
-              // هنا ممكن مستقبلاً تضيف الـ image_url لو المستخدم بعت صورة فاتورة
-            ]
+            "content": req.body.message || "What is the meaning of life?"
           }
         ],
-        "response_format": { "type": "json_object" }
+        "temperature": 0.1 // لضمان دقة استخراج الأرقام
       })
     });
 
     const data = await response.json();
 
     if (data.choices && data.choices[0]) {
-      // استخراج النص وتحويله لـ JSON
-      const content = data.choices[0].message.content;
-      return res.status(200).json(JSON.parse(content));
+      // محاولة إرجاع النص مباشرة أو تحويله لـ JSON
+      const aiContent = data.choices[0].message.content;
+      try {
+        return res.status(200).json(JSON.parse(aiContent));
+      } catch (parseError) {
+        // في حال الموديل رجع نص عادي بدلاً من JSON
+        return res.status(200).json({ text: aiContent });
+      }
     } else {
-      return res.status(500).json({ error: "AI Error", details: data });
+      return res.status(500).json({ error: "API Error", details: data });
     }
 
   } catch (error) {
