@@ -1,5 +1,4 @@
 module.exports = async function (req, res) {
-  // ===== CORS =====
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
@@ -19,55 +18,25 @@ module.exports = async function (req, res) {
       categories = {},
       loans = [],
       installments = []
-    } = req.body || {};
+    } = req.body;
 
     if (!message)
       return res.status(400).json({ error: "Message is required" });
 
-    // ================= SYSTEM PROMPT =================
-
     const systemPrompt = `
 You are a highly precise financial transaction extraction engine.
 
-CRITICAL EXECUTION RULES:
+CRITICAL RULES:
 
-You MUST follow these rules strictly. If any rule conflicts, follow the order below.
+1) Sentence may contain MULTIPLE financial actions.
+2) Extract EACH action separately.
+3) NEVER merge unrelated amounts.
+4) NEVER return negative amounts.
+5) Amount MUST always be positive.
+6) Type defines money direction.
+7) Return STRICT JSON only.
+8) Never return markdown or explanation.
 
-HIGHEST PRIORITY RULES (cannot be broken):
-
-1) Amount MUST ALWAYS be a positive number.
-2) NEVER return negative amounts under any circumstance.
-3) Transaction type defines money direction, NOT the sign.
-4) For income:
-   - destinationAccount MUST be filled.
-   - sourceAccount MUST be null.
-5) For expense:
-   - sourceAccount MUST be filled.
-   - destinationAccount MUST be null.
-6) For transfer:
-   - BOTH sourceAccount AND destinationAccount MUST be filled.
-7) If only ONE account is detected:
-   - expense → sourceAccount = detected account
-   - income → destinationAccount = detected account
-8) If NO account detected:
-   - expense → sourceAccount = defaultAccount
-   - income → destinationAccount = defaultAccount
-9) If installment or loan detected:
-   - type MUST be installment_payment or loan_payment
-   - relatedName MUST contain exact matched name
-   - If no amount → amount = null (full payment)
-
-STRUCTURE RULES:
-
-10) The sentence may contain MULTIPLE financial actions.
-11) Extract EACH action separately.
-12) NEVER merge unrelated amounts.
-13) NEVER ignore any amount.
-14) Parse the FULL sentence before generating output.
-15) Return STRICT JSON only.
-16) NEVER return markdown or explanations.
-
----------------------------------------
 SUPPORTED TYPES:
 - expense
 - income
@@ -75,7 +44,6 @@ SUPPORTED TYPES:
 - loan_payment
 - installment_payment
 
----------------------------------------
 ACCOUNTS:
 ${JSON.stringify(accounts)}
 
@@ -91,55 +59,48 @@ ${JSON.stringify(installments)}
 CATEGORIES (English only):
 ${JSON.stringify(categories)}
 
----------------------------------------
 ACCOUNT LOGIC:
 
-- If TWO known accounts → transfer
-- If ONE account:
+- Two known accounts → transfer
+- One account:
     expense → sourceAccount
     income → destinationAccount
-- If NO account:
+- No account:
     expense → sourceAccount = defaultAccount
     income → destinationAccount = defaultAccount
 
 If transfer missing destination → treat as expense.
 
----------------------------------------
 LOAN / INSTALLMENT RULES:
 
-If user mentions loan/installment name:
+If loan/installment name mentioned:
 
 - If NO amount specified:
     amount MUST be null
-    This indicates FULL PAYMENT
-    NEVER guess installment value
+    This means FULL PAYMENT.
 
 - If amount specified:
-    amount = specified number
+    amount = specified number.
 
-Type must be:
+Use:
 - loan_payment
 - installment_payment
 
-relatedName must contain the matched loan/installment name.
+relatedName MUST equal matched loan/installment name.
 
----------------------------------------
 CATEGORY RULES:
 
-- Categories and subcategories MUST be English.
+- Categories must be English.
 - Prefer existing categories.
-- Suggest ONLY if confidence >= 0.90.
-- Never suggest existing categories/subcategories.
+- Suggest only if confidence >= 0.90.
+- Never suggest existing categories.
 
----------------------------------------
 AMOUNT RULES:
 
-- Support Arabic & English numerals.
+- Support Arabic and English numbers.
 - Support written Arabic numbers.
 - Multiple amounts → multiple transactions.
-- Never merge separate actions.
 
----------------------------------------
 OUTPUT FORMAT:
 
 {
@@ -155,14 +116,18 @@ OUTPUT FORMAT:
       "confidence": number
     }
   ],
+  "detectedLoans": [
+    { "name": string, "amount": number | null }
+  ],
+  "detectedInstallments": [
+    { "name": string, "amount": number | null }
+  ],
   "suggestion": {
     "category": string | null,
     "subcategory": string | null
   }
 }
 `;
-
-    // ================= GROQ CALL =================
 
     const response = await fetch(
       "https://api.groq.com/openai/v1/chat/completions",
@@ -175,7 +140,6 @@ OUTPUT FORMAT:
         body: JSON.stringify({
           model: "llama-3.1-8b-instant",
           temperature: 0.1,
-          response_format: { type: "json_object" }, // يمنع markdown
           messages: [
             { role: "system", content: systemPrompt },
             { role: "user", content: message }
@@ -193,24 +157,74 @@ OUTPUT FORMAT:
       });
     }
 
-    const raw = data?.choices?.[0]?.message?.content;
-
-    if (!raw) {
+    const raw = data.choices?.[0]?.message?.content;
+    if (!raw)
       return res.status(500).json({
         error: "Invalid AI response",
         raw: data
       });
-    }
+
+    let cleaned = raw.replace(/```json|```/g, "").trim();
 
     let parsed;
-
     try {
-      parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+      parsed = JSON.parse(cleaned);
     } catch (e) {
       return res.status(500).json({
         error: "AI did not return valid JSON",
-        raw
+        raw: cleaned
       });
+    }
+
+    // =============================
+    // NORMALIZATION LAYER
+    // =============================
+
+    parsed.transactions = (parsed.transactions || []).map(tx => {
+
+      // 1️⃣ Make amount positive
+      if (typeof tx.amount === "number") {
+        tx.amount = Math.abs(tx.amount);
+      }
+
+      // 2️⃣ Fix direction
+
+      if (tx.type === "income") {
+        tx.sourceAccount = null;
+        if (!tx.destinationAccount)
+          tx.destinationAccount = defaultAccount || null;
+      }
+
+      if (tx.type === "expense") {
+        tx.destinationAccount = null;
+        if (!tx.sourceAccount)
+          tx.sourceAccount = defaultAccount || null;
+      }
+
+      if (tx.type === "transfer") {
+        if (!tx.sourceAccount)
+          tx.sourceAccount = defaultAccount || null;
+      }
+
+      if (tx.type === "loan_payment" || tx.type === "installment_payment") {
+        if (!tx.sourceAccount)
+          tx.sourceAccount = defaultAccount || null;
+      }
+
+      return tx;
+    });
+
+    // 3️⃣ Confidence Filter
+    parsed.transactions = parsed.transactions.filter(tx => tx.confidence >= 0.7);
+
+    // 4️⃣ Suggestion filter
+    if (
+      parsed.suggestion &&
+      parsed.suggestion.category &&
+      parsed.suggestion.confidence &&
+      parsed.suggestion.confidence < 0.9
+    ) {
+      parsed.suggestion = { category: null, subcategory: null };
     }
 
     return res.status(200).json(parsed);
