@@ -17,10 +17,9 @@ export default async function handler(req, res) {
 
   const API_KEY = process.env.GEMINI_API_KEY;
 
-// 1. استخدم v1 بدل v1beta
-// 2. استخدم gemini-1.5-flash (ده الموديل اللي شغال عند كل الناس حالياً)
-const MODEL_NAME = "gemini-1.5-flash"; 
-const URL = `https://generativelanguage.googleapis.com/v1/models/${MODEL_NAME}:generateContent?key=${API_KEY}`;
+// 1. استخدم v1beta لأنها بتدعم الميزات اللي محتاجينها
+// 2. استخدم gemini-1.5-flash-latest عشان يختار الموديل المتاح فوراً
+const URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${API_KEY}`;
 
 
   const prompt = `
