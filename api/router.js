@@ -1,41 +1,52 @@
-import Groq from "groq-sdk";
+const Groq = require("groq-sdk");
 
-const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+// التأكد من وجود المفتاح
+const groq = new Groq({
+  apiKey: process.env.GROQ_API_KEY,
+});
 
-export default async function (req, res) {
-  if (req.method !== "POST") return res.status(405).send("Method Not Allowed");
+module.exports = async function (req, res) {
+  // تفعيل الـ CORS عشان تقدر تكلمه من أي مكان
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+
+  if (req.method === 'OPTIONS') {
+    return res.status(200).end();
+  }
+
+  if (req.method !== "POST") {
+    return res.status(405).json({ error: "Method not allowed" });
+  }
 
   try {
-    const userText = req.body.message || "اكلت ب ٢٠٠ جنيه و شريت قهوه ب ٣٠٠ و حولت من حساب cib لحساب hsbc ٢٠٠ جنيه";
+    const userMessage = req.body.message || "اكلت ب ٢٠٠ جنيه";
 
-    const completion = await groq.chat.completions.create({
-      model: "llama-3.1-8b-instant",
-      messages: [
+    const chatCompletion = await groq.chat.completions.create({
+      "messages": [
         {
-          role: "system",
-          content: `You are a financial data extractor. Extract ALL transactions from the text.
-          Format the output as a JSON ARRAY of objects.
-          Each object must have: {"type": "expense|income|transfer", "amount": number, "currency": "EGP", "category": string, "item": string, "from": string|null, "to": string|null}.
-          Return ONLY the JSON array.`
+          "role": "system",
+          "content": "Extract transactions into a JSON array. Format: [{\"type\": \"expense|income|transfer\", \"amount\": number, \"item\": string}]. Return ONLY JSON."
         },
         {
-          role: "user",
-          content: userText,
-        },
+          "role": "user",
+          "content": userMessage
+        }
       ],
-      temperature: 0.1, // لضمان الدقة في الأرقام
-      response_format: { type: "json_object" } // Groq يدعم إجبار الموديل على JSON
+      "model": "llama-3.1-8b-instant",
+      "temperature": 0.1,
+      "response_format": { "type": "json_object" }
     });
 
-    const result = completion.choices[0]?.message?.content;
-    
-    // إرسال النتيجة النهائية
-    return res.status(200).json({
-      success: true,
-      data: JSON.parse(result)
-    });
+    const content = chatCompletion.choices[0]?.message?.content;
+    return res.status(200).json(JSON.parse(content));
 
   } catch (error) {
-    return res.status(500).json({ success: false, error: error.message });
+    console.error("Groq Error:", error);
+    return res.status(500).json({ 
+      error: "Internal Server Error", 
+      message: error.message,
+      hint: "Check if GROQ_API_KEY is set in Vercel Environment Variables"
+    });
   }
-}
+};
