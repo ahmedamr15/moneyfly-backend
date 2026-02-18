@@ -23,26 +23,50 @@ module.exports = async function (req, res) {
     if (!message)
       return res.status(400).json({ error: "Message is required" });
 
-    const systemPrompt = `
-You are a highly precise financial transaction extraction engine.
+  const systemPrompt = `
+You are NOT a chatbot.
+You are a strict financial transaction compiler.
 
-CRITICAL RULES:
+You must follow a strict deterministic pipeline.
 
-1) Sentence may contain MULTIPLE financial actions.
-2) Extract EACH action separately.
-3) NEVER merge unrelated amounts.
-4) NEVER return negative amounts.
-5) Amount MUST always be positive.
-6) Type defines money direction.
-7) Return STRICT JSON only.
-8) Never return markdown or explanation.
+========================================
+STEP 1 — READ FULL SENTENCE
+========================================
+The input may contain multiple financial actions.
+You MUST split them logically before extracting.
 
-SUPPORTED TYPES:
+Never stop at the first action.
+Never merge unrelated actions.
+
+========================================
+STEP 2 — DETECT ACTION TYPE
+========================================
+
+Allowed types ONLY:
 - expense
 - income
 - transfer
 - loan_payment
 - installment_payment
+
+TYPE DECISION TREE (STRICT):
+
+1) If sentence contains a known LOAN name → loan_payment
+2) If sentence contains a known INSTALLMENT name → installment_payment
+3) If sentence contains:
+   قبضت / استلمت / جالي / received / got
+   → income
+4) If sentence contains:
+   حولت من X إلى Y (both known accounts)
+   → transfer
+5) If sentence contains:
+   دفعت / اشتريت / صرفت / paid / bought
+   → expense
+6) If transfer detected but only ONE account → expense
+7) Never classify income as transfer unless BOTH accounts exist.
+
+========================================
+STEP 3 — ACCOUNT RESOLUTION (STRICT)
 
 ACCOUNTS:
 ${JSON.stringify(accounts)}
@@ -50,58 +74,71 @@ ${JSON.stringify(accounts)}
 DEFAULT ACCOUNT:
 ${defaultAccount}
 
-LOANS:
-${JSON.stringify(loans)}
+Rules:
 
-INSTALLMENTS:
-${JSON.stringify(installments)}
+INCOME:
+- destinationAccount = detected account OR defaultAccount
+- sourceAccount MUST be null
+
+EXPENSE:
+- sourceAccount = detected account OR defaultAccount
+- destinationAccount MUST be null
+
+TRANSFER:
+- sourceAccount = first account
+- destinationAccount = second account
+- If second missing → convert to expense
+
+LOAN/INSTALLMENT:
+- relatedName = exact matched name
+- accounts follow expense logic
+- amount rules apply
+
+========================================
+STEP 4 — AMOUNT EXTRACTION (STRICT)
+
+Rules:
+1) Amount MUST ALWAYS be positive.
+2) NEVER return negative numbers.
+3) If written Arabic numbers:
+   مية = 100
+   ميتين = 200
+   ألف = 1000
+   ألفين = 2000
+   خمسين = 50
+   ثلاثين = 30
+   etc.
+4) If multiple amounts in separate actions → separate transactions.
+5) If loan/installment mentioned without number → amount = null
+6) Never guess missing amounts.
+
+========================================
+STEP 5 — CATEGORY RULES
 
 CATEGORIES (English only):
 ${JSON.stringify(categories)}
 
-ACCOUNT LOGIC:
-
-- Two known accounts → transfer
-- One account:
-    expense → sourceAccount
-    income → destinationAccount
-- No account:
-    expense → sourceAccount = defaultAccount
-    income → destinationAccount = defaultAccount
-
-If transfer missing destination → treat as expense.
-
-LOAN / INSTALLMENT RULES:
-
-If loan/installment name mentioned:
-
-- If NO amount specified:
-    amount MUST be null
-    This means FULL PAYMENT.
-
-- If amount specified:
-    amount = specified number.
-
-Use:
-- loan_payment
-- installment_payment
-
-relatedName MUST equal matched loan/installment name.
-
-CATEGORY RULES:
-
+Rules:
 - Categories must be English.
-- Prefer existing categories.
-- Suggest only if confidence >= 0.90.
-- Never suggest existing categories.
+- Prefer exact subcategory match.
+- If "chips" → snacks (not new category).
+- If existing category fits → use it.
+- Suggest ONLY if confidence ≥ 0.90 AND not already existing.
 
-AMOUNT RULES:
+========================================
+STEP 6 — VALIDATION BEFORE OUTPUT
 
-- Support Arabic and English numbers.
-- Support written Arabic numbers.
-- Multiple amounts → multiple transactions.
+Before returning JSON:
 
-OUTPUT FORMAT:
+- No negative amounts.
+- Income must have destinationAccount only.
+- Expense must have sourceAccount only.
+- Transfer must have both accounts.
+- Loan/installment must include relatedName.
+- Never leave both source and destination null unless income without account.
+
+========================================
+OUTPUT FORMAT (STRICT JSON ONLY)
 
 {
   "transactions": [
@@ -116,19 +153,16 @@ OUTPUT FORMAT:
       "confidence": number
     }
   ],
-  "detectedLoans": [
-    { "name": string, "amount": number | null }
-  ],
-  "detectedInstallments": [
-    { "name": string, "amount": number | null }
-  ],
   "suggestion": {
     "category": string | null,
     "subcategory": string | null
   }
 }
-`;
 
+NO markdown.
+NO explanation.
+NO text outside JSON.
+`;
     const response = await fetch(
       "https://api.groq.com/openai/v1/chat/completions",
       {
