@@ -11,36 +11,41 @@ module.exports = async function (req, res) {
       method: "POST",
       headers: {
         "Authorization": `Bearer ${API_KEY}`,
-        "HTTP-Referer": "https://moneyfly.vercel.app", // اختياري
-        "X-Title": "Moneyfly", // اختياري
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://moneyfly.vercel.app", 
+        "X-Title": "Moneyfly"
       },
       body: JSON.stringify({
-        "model": "meta-llama/llama-3.2-3b-instruct:free",
+        "model": "qwen/qwen3-4b:free",
         "messages": [
           {
             "role": "system",
-            "content": "You are a finance expert. Extract transactions into JSON: {\"transactions\": [{\"type\": \"expense|income\", \"amount\": number, \"category\": string, \"item\": string}]}. Support Arabic and English."
+            "content": "You are a financial expert. Extract transactions into JSON: {\"transactions\": [{\"type\": \"expense|income\", \"amount\": number, \"category\": string, \"item\": string}]}. Return ONLY JSON."
           },
           {
             "role": "user",
-            "content": req.body.message || "What is the meaning of life?"
+            "content": req.body.message || "اشتريت غدا بـ 100 جنيه"
           }
         ],
-        "temperature": 0.1 // لضمان دقة استخراج الأرقام
+        "temperature": 0.1
       })
     });
 
     const data = await response.json();
 
     if (data.choices && data.choices[0]) {
-      // محاولة إرجاع النص مباشرة أو تحويله لـ JSON
-      const aiContent = data.choices[0].message.content;
+      let aiContent = data.choices[0].message.content.trim();
+      
+      // تنظيف النص لو الموديل أضاف علامات Markdown
+      aiContent = aiContent.replace(/```json|```/g, "").trim();
+
       try {
         return res.status(200).json(JSON.parse(aiContent));
-      } catch (parseError) {
-        // في حال الموديل رجع نص عادي بدلاً من JSON
-        return res.status(200).json({ text: aiContent });
+      } catch (e) {
+        return res.status(200).json({ 
+          error: "Failed to parse JSON", 
+          raw_text: aiContent 
+        });
       }
     } else {
       return res.status(500).json({ error: "API Error", details: data });
