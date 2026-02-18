@@ -17,10 +17,11 @@ export default async function handler(req, res) {
 
   const API_KEY = process.env.GEMINI_API_KEY;
 
-// 1. استخدم v1beta لأنها بتدعم الميزات اللي محتاجينها
-// 2. استخدم gemini-1.5-flash-latest عشان يختار الموديل المتاح فوراً
-const URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${API_KEY}`;
+// مفتاح OpenRouter من إعدادات Vercel
+const API_KEY = process.env.OPENROUTER_API_KEY;
 
+// الـ URL الثابت لـ OpenRouter
+const URL = "https://openrouter.ai/api/v1/chat/completions";
 
   const prompt = `
 You are a strict financial transaction extraction engine.
