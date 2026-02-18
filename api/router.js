@@ -1,78 +1,51 @@
 module.exports = async function (req, res) {
   try {
     if (req.method !== "POST") {
-      return res.status(405).json({ error: "Only POST allowed" });
+      return res.status(405).json({ error: "Method not allowed" });
     }
 
     const API_KEY = process.env.OPENROUTER_API_KEY;
     const URL = "https://openrouter.ai/api/v1/chat/completions";
 
-    // الخطوة 1: الطلب الأول (كما في الـ Documentation)
-    const response1 = await fetch(URL, {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${API_KEY}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        "model": "openrouter/free", // الموديل التلقائي المجاني
-        "messages": [
-          {
-            "role": "user",
-            "content": req.body.message || "How many r's are in the word 'strawberry'?"
-          }
-        ],
-        "reasoning": { "enabled": true } // تفعيل ميزة التفكير
-      })
-    });
-
-    const result1 = await response1.json();
-    
-    // التحقق من صحة الرد الأول
-    if (!result1.choices) {
-        return res.status(200).json({ error: "First call failed", details: result1 });
-    }
-
-    const assistantMsg = result1.choices[0].message;
-
-    // الخطوة 2: بناء المحادثة الثانية (Preserving reasoning_details)
-    const messages = [
-      {
-        role: 'user',
-        content: req.body.message || "How many r's are in the word 'strawberry'?",
-      },
-      {
-        role: 'assistant',
-        content: assistantMsg.content,
-        reasoning_details: assistantMsg.reasoning_details, // الاحتفاظ بالتفكير السابق
-      },
-      {
-        role: 'user',
-        content: "Are you sure? Think carefully.",
-      },
-    ];
-
-    // الخطوة 3: الطلب الثاني (المتابعة)
-    const response2 = await fetch(URL, {
+    const response = await fetch(URL, {
       method: "POST",
       headers: {
         "Authorization": `Bearer ${API_KEY}`,
         "Content-Type": "application/json",
+        "HTTP-Referer": "https://moneyfly-app.com", // اختياري لترتيبك في OpenRouter
+        "X-Title": "Moneyfly App" 
       },
       body: JSON.stringify({
-        "model": "openrouter/free",
-        "messages": messages
+        "model": "google/gemma-3-12b-it:free",
+        "messages": [
+          {
+            "role": "system",
+            "content": "You are an expert bilingual financial assistant (Arabic/English). Extract transaction details into a strict JSON format: {\"transactions\": [{\"type\": \"expense|income\", \"amount\": number, \"category\": string, \"item\": string}]}. Only return JSON."
+          },
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "text",
+                "text": req.body.message || "اشتريت قهوة بـ 30 جنيه"
+              }
+              // هنا ممكن مستقبلاً تضيف الـ image_url لو المستخدم بعت صورة فاتورة
+            ]
+          }
+        ],
+        "response_format": { "type": "json_object" }
       })
     });
 
-    const result2 = await response2.json();
+    const data = await response.json();
 
-    // إرسال النتيجة النهائية لـ Hoppscotch
-    return res.status(200).json({
-      initial_reasoning: assistantMsg.reasoning_details,
-      final_answer: result2.choices?.[0]?.message?.content || "No final answer",
-      full_response: result2
-    });
+    if (data.choices && data.choices[0]) {
+      // استخراج النص وتحويله لـ JSON
+      const content = data.choices[0].message.content;
+      return res.status(200).json(JSON.parse(content));
+    } else {
+      return res.status(500).json({ error: "AI Error", details: data });
+    }
 
   } catch (error) {
     return res.status(500).json({ error: "Server Crash", message: error.message });
