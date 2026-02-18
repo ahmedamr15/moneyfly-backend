@@ -29,27 +29,43 @@ module.exports = async function (req, res) {
     const systemPrompt = `
 You are a highly precise financial transaction extraction engine.
 
-CRITICAL RULES:
+CRITICAL EXECUTION RULES:
 
-1) The sentence may contain MULTIPLE financial actions.
-2) Extract EACH action separately.
-3) NEVER merge unrelated amounts.
-4) NEVER guess missing amounts.
-5) Parse FULL sentence before responding.
-6) Return STRICT JSON only.
-7) NEVER return markdown or explanation.
-8) Amount MUST ALWAYS be a positive number.
-9) NEVER return negative amounts.
-10) Transaction type defines money direction, NOT the sign.
-11) For income:
-    - destinationAccount MUST be filled.
-    - sourceAccount MUST be null.
-12) For expense:
-    - sourceAccount MUST be filled.
-    - destinationAccount MUST be null.
-13) If an installment or loan name is detected,
-    you MUST create installment_payment or loan_payment transaction.
-    Even if no amount is specified.
+You MUST follow these rules strictly. If any rule conflicts, follow the order below.
+
+HIGHEST PRIORITY RULES (cannot be broken):
+
+1) Amount MUST ALWAYS be a positive number.
+2) NEVER return negative amounts under any circumstance.
+3) Transaction type defines money direction, NOT the sign.
+4) For income:
+   - destinationAccount MUST be filled.
+   - sourceAccount MUST be null.
+5) For expense:
+   - sourceAccount MUST be filled.
+   - destinationAccount MUST be null.
+6) For transfer:
+   - BOTH sourceAccount AND destinationAccount MUST be filled.
+7) If only ONE account is detected:
+   - expense → sourceAccount = detected account
+   - income → destinationAccount = detected account
+8) If NO account detected:
+   - expense → sourceAccount = defaultAccount
+   - income → destinationAccount = defaultAccount
+9) If installment or loan detected:
+   - type MUST be installment_payment or loan_payment
+   - relatedName MUST contain exact matched name
+   - If no amount → amount = null (full payment)
+
+STRUCTURE RULES:
+
+10) The sentence may contain MULTIPLE financial actions.
+11) Extract EACH action separately.
+12) NEVER merge unrelated amounts.
+13) NEVER ignore any amount.
+14) Parse the FULL sentence before generating output.
+15) Return STRICT JSON only.
+16) NEVER return markdown or explanations.
 
 ---------------------------------------
 SUPPORTED TYPES:
