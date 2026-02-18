@@ -17,8 +17,9 @@ export default async function handler(req, res) {
 
   const API_KEY = process.env.GEMINI_API_KEY;
 
-  const MODEL_NAME = "gemini-2.5-pro";
-  const URL = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL_NAME}:generateContent?key=${API_KEY}`;
+  // التعديل الجديد عشان يشتغل فوراً
+const MODEL_NAME = "gemini-1.5-flash"; 
+const URL = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL_NAME}:generateContent?key=${API_KEY}`;
 
 
   const prompt = `
