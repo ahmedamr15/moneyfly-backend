@@ -78,9 +78,6 @@ You do NOT explain.
 You do NOT add thoughts.
 You return STRICT JSON ONLY.
 
---------------------------------------------------
-AVAILABLE ENTITIES (UUID-ONLY RESOLUTION)
-
 DEFAULT_ACCOUNT_ID:
 ${defaultAccountId}
 
@@ -102,14 +99,11 @@ ${JSON.stringify(installments)}
 CATEGORIES:
 ${JSON.stringify(categories)}
 
---------------------------------------------------
 SUPPORTED ACTIONS:
-
 LOG_TRANSACTION
 OBLIGATION_PAYMENT
 TRANSFER_FUNDS
 
---------------------------------------------------
 RULES:
 
 1) Split sentence into independent financial clauses.
@@ -120,14 +114,14 @@ RULES:
 6) Use ONLY UUIDs from provided lists.
 7) NEVER return names.
 8) If account unspecified:
-   - Expense → use DEFAULT_ACCOUNT_ID
-   - Income → use DEFAULT_ACCOUNT_ID
+   - Expense → DEFAULT_ACCOUNT_ID
+   - Income → DEFAULT_ACCOUNT_ID
 9) If "credit" mentioned:
-   - If only one credit card → use it
-   - If multiple and defaultCreditCardId exists → use it
+   - If one card → use it
+   - If multiple & defaultCreditCardId exists → use it
    - If ambiguous → sourceAccountId = null and mentionsCredit = true
-10) If loan/installment mentioned:
-   - If only one match → use relatedId
+10) Loan/installment:
+   - If one match → use relatedId
    - If multiple → relatedId = null and flag mention
 11) Currency:
    - Detect if stated (USD, EGP, EUR etc.)
@@ -139,7 +133,6 @@ RULES:
    +0.1 clear intent
    Max 1.0
 
---------------------------------------------------
 STRICT OUTPUT FORMAT:
 
 {
@@ -162,10 +155,10 @@ STRICT OUTPUT FORMAT:
   ]
 }
 
-NO markdown.
-NO explanation.
-NO extra keys.
 Return JSON only.
+No markdown.
+No explanation.
+No extra keys.
 `;
 
     // =====================================================
@@ -209,32 +202,21 @@ Return JSON only.
       });
     }
 
-// =============================
-// CLEAN JSON EXTRACTION
-// =============================
+    // =====================================================
+    // 🔒 ROBUST JSON EXTRACTION (Removes <think>)
+    // =====================================================
 
-const firstBrace = raw.indexOf("{");
-const lastBrace = raw.lastIndexOf("}");
+    const firstBrace = raw.indexOf("{");
+    const lastBrace = raw.lastIndexOf("}");
 
-if (firstBrace === -1 || lastBrace === -1) {
-return res.status(500).json({
-error: "AI did not return JSON structure",
-raw: raw
-});
-}
+    if (firstBrace === -1 || lastBrace === -1) {
+      return res.status(500).json({
+        error: "AI did not return JSON structure",
+        raw: raw
+      });
+    }
 
-let cleaned = raw.substring(firstBrace, lastBrace + 1);
-
-let parsed;
-
-try {
-parsed = JSON.parse(cleaned);
-} catch (e) {
-return res.status(500).json({
-error: "AI returned malformed JSON",
-raw: cleaned
-});
-}
+    let cleaned = raw.substring(firstBrace, lastBrace + 1);
 
     let parsed;
 
@@ -242,13 +224,13 @@ raw: cleaned
       parsed = JSON.parse(cleaned);
     } catch (e) {
       return res.status(500).json({
-        error: "AI did not return valid JSON",
+        error: "AI returned malformed JSON",
         raw: cleaned
       });
     }
 
     // =====================================================
-    // 🔒 NORMALIZATION LAYER
+    // 🔧 NORMALIZATION LAYER
     // =====================================================
 
     parsed.actions = (parsed.actions || []).map(action => {
