@@ -138,13 +138,14 @@ Return JSON only.
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
-          model: "qwen/qwen3-32b",
-          temperature: 0.1,
-          messages: [
-            { role: "system", content: systemPrompt },
-            { role: "user", content: message }
-          ]
-        })
+  model: "qwen/qwen3-32b",
+  temperature: 0.1,
+  response_format: { type: "json_object" },
+  messages: [
+    { role: "system", content: systemPrompt },
+    { role: "user", content: message }
+  ]
+})
       }
     );
 
