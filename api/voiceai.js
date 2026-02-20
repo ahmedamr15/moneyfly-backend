@@ -255,7 +255,7 @@ No extra keys.
     });
 
     // Confidence filter
-    parsed.actions = parsed.actions.filter(a => a.confidence >= 0.6);
+    //parsed.actions = parsed.actions.filter(a => a.confidence >= 0.6);
 
     return res.status(200).json(parsed);
 
