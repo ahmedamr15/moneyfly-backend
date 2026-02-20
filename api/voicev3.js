@@ -138,7 +138,7 @@ Return JSON only.
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
-          model: "llama-3.1-8b-instant",
+          model: "qwen/qwen3-32b",
           temperature: 0.1,
           messages: [
             { role: "system", content: systemPrompt },
