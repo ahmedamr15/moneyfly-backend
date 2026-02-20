@@ -1,4 +1,4 @@
-export default async function handler(req, res) {
+module.exports = async function (req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
@@ -9,41 +9,51 @@ export default async function handler(req, res) {
 
   try {
     const API_KEY = process.env.GROQ_API_KEY;
-    if (!API_KEY)
-      return res.status(500).json({ error: "Missing GROQ_API_KEY" });
+    if (!API_KEY) throw new Error("Missing GROQ_API_KEY");
 
     const {
       message,
-      assets = [],
-      cards = [],
+      defaultAccountId = null,
+      defaultCreditCardId = null,
+      accounts = [],
+      creditCards = [],
       loans = [],
       installments = [],
-      categories = [],
-      defaultAccountId = null,
-      baseCurrency = "EGP"
+      categories = []
     } = req.body;
 
     if (!message)
       return res.status(400).json({ error: "Message is required" });
 
     const systemPrompt = `
-You are a STRICT FINANCIAL EXECUTION ENGINE.
-Return JSON ONLY.
+You are a STRICT deterministic financial action extraction engine.
 
----------------------------------------
-CRITICAL RULE: UUID ONLY
+You are NOT a chatbot.
+You NEVER explain.
+You NEVER add text outside JSON.
+You ONLY return structured JSON.
 
-You MUST return ONLY IDs exactly as provided.
-NEVER return names.
-NEVER return strings.
-If unsure → return REQUEST_CLARIFICATION.
+====================================================
+CORE RESPONSIBILITY
 
----------------------------------------
-ASSETS:
-${JSON.stringify(assets)}
+Convert user voice input into structured financial actions.
 
-CREDIT_CARDS:
-${JSON.stringify(cards)}
+You MUST:
+- Split multiple financial actions.
+- Never merge unrelated numbers.
+- Never invent entities.
+- Never guess when multiple entities exist.
+- Return UUIDs only (never names).
+- Always return currency.
+
+====================================================
+AVAILABLE ENTITIES
+
+ACCOUNTS:
+${JSON.stringify(accounts)}
+
+CREDIT CARDS:
+${JSON.stringify(creditCards)}
 
 LOANS:
 ${JSON.stringify(loans)}
@@ -54,79 +64,61 @@ ${JSON.stringify(installments)}
 CATEGORIES:
 ${JSON.stringify(categories)}
 
-DEFAULT_ACCOUNT_ID:
+DEFAULT ACCOUNT:
 ${defaultAccountId}
 
-BASE_CURRENCY:
-${baseCurrency}
+DEFAULT CREDIT CARD:
+${defaultCreditCardId}
 
----------------------------------------
-CLAUSE RULE
+====================================================
+ENTITY RULES
 
-Split sentence into independent financial clauses.
-Each clause must produce one action.
-Amounts MUST NOT leak between clauses.
+1) If user mentions entity clearly → return exact UUID.
+2) If entity mentioned generically:
+   - credit → set mentionsCredit = true
+   - loan → set mentionsLoan = true
+   - installment → set mentionsInstallment = true
+3) If multiple entities exist and user does not specify:
+   - NEVER choose randomly.
+   - Return null ID and mention flag.
+4) If only one entity exists → return its UUID directly.
+5) Never fabricate IDs.
 
----------------------------------------
-ACCOUNT RULES
+====================================================
+TYPE RULES
 
-If "credit", "card", "visa", "mastercard" appears:
-→ You MUST match ONLY from CREDIT_CARDS.
-→ Ignore ASSETS completely.
+Income → destinationAccountId must be filled.
+Expense → sourceAccountId must be filled (if known).
+Transfer → both accounts must be filled.
+Loan/installment → action = OBLIGATION_PAYMENT.
 
-If transfer verb appears AND two ASSETS mentioned:
-→ transfer
-
-If no account mentioned:
-Expense → sourceAccountId = DEFAULT_ACCOUNT_ID
-Income → destinationAccountId = DEFAULT_ACCOUNT_ID
-
----------------------------------------
-OBLIGATION RULE
-
-If loan/installment mentioned:
-→ action = OBLIGATION_PAYMENT
-If no amount in same clause:
-→ amount = null
-
----------------------------------------
-CATEGORY RULE
-
-Each category has fixed type.
-You MUST match by ID.
-If unsure → categoryId = null.
-
----------------------------------------
-CONFIDENCE RULE
-
-Base confidence = 0.5
-+0.2 exact account match
-+0.2 category match
-+0.1 currency detected
-Max 0.95
-Never return 1.0
-
----------------------------------------
-OUTPUT FORMAT
+====================================================
+OUTPUT FORMAT (STRICT)
 
 {
   "actions": [
     {
-      "action": "LOG_TRANSACTION | OBLIGATION_PAYMENT | REQUEST_CLARIFICATION",
+      "action": "LOG_TRANSACTION | OBLIGATION_PAYMENT | TRANSFER",
       "type": "expense | income | transfer | null",
       "amount": number | null,
-      "currency": string,
-      "categoryId": string | null,
-      "subcategoryId": string | null,
-      "sourceAccountId": string | null,
-      "destinationAccountId": string | null,
-      "relatedId": string | null,
+      "currency": "string",
+      "categoryId": "string | null",
+      "subcategoryId": "string | null",
+      "sourceAccountId": "string | null",
+      "destinationAccountId": "string | null",
+      "relatedId": "string | null",
+      "mentionsCredit": boolean,
+      "mentionsLoan": boolean,
+      "mentionsInstallment": boolean,
       "confidence": number
     }
   ]
 }
 
 Return JSON only.
+No markdown.
+No explanation.
+No text outside JSON.
 `;
 
     const response = await fetch(
@@ -138,27 +130,39 @@ Return JSON only.
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
-  model: "qwen/qwen3-32b",
-  temperature: 0.1,
-  response_format: { type: "json_object" },
-  messages: [
-    { role: "system", content: systemPrompt },
-    { role: "user", content: message }
-  ]
-})
+          model: "qwen/qwen3-32b",
+          temperature: 0.1,
+          response_format: { type: "json_object" },
+          messages: [
+            { role: "system", content: systemPrompt },
+            { role: "user", content: message }
+          ]
+        })
       }
     );
 
     const data = await response.json();
 
-    if (data.error)
-      return res.status(400).json({ error: "Groq API Error", details: data.error });
+    if (data.error) {
+      return res.status(400).json({
+        error: "Groq API Error",
+        details: data.error
+      });
+    }
 
     const raw = data.choices?.[0]?.message?.content;
     if (!raw)
-      return res.status(500).json({ error: "Invalid AI response" });
+      return res.status(500).json({
+        error: "Invalid AI response",
+        raw: data
+      });
 
-    let cleaned = raw.replace(/```json|```/g, "").trim();
+    let cleaned = raw.trim();
+
+    // Extra safety strip (in case model leaks reasoning)
+    if (cleaned.startsWith("<")) {
+      cleaned = cleaned.substring(cleaned.indexOf("{"));
+    }
 
     let parsed;
     try {
@@ -170,41 +174,29 @@ Return JSON only.
       });
     }
 
-    // -----------------------------
-    // STRICT VALIDATION LAYER
-    // -----------------------------
+    // =============================
+    // NORMALIZATION LAYER
+    // =============================
 
-    const validIds = new Set([
-      ...assets.map(a => a.id),
-      ...cards.map(c => c.id),
-      ...loans.map(l => l.id),
-      ...installments.map(i => i.id),
-      ...categories.map(c => c.categoryId),
-      ...categories.flatMap(c => c.subcategories.map(s => s.id))
-    ]);
+    parsed.actions = (parsed.actions || []).map(action => {
 
-    for (const action of parsed.actions || []) {
-      const idsToCheck = [
-        action.sourceAccountId,
-        action.destinationAccountId,
-        action.categoryId,
-        action.subcategoryId,
-        action.relatedId
-      ].filter(Boolean);
-
-      for (const id of idsToCheck) {
-        if (!validIds.has(id)) {
-          return res.status(500).json({
-            error: "AI returned non-UUID entity",
-            invalidId: id
-          });
-        }
+      // Force positive amounts
+      if (typeof action.amount === "number") {
+        action.amount = Math.abs(action.amount);
       }
 
-      if (action.confidence >= 1.0) {
-        action.confidence = 0.95;
+      // Guarantee booleans
+      action.mentionsCredit = !!action.mentionsCredit;
+      action.mentionsLoan = !!action.mentionsLoan;
+      action.mentionsInstallment = !!action.mentionsInstallment;
+
+      // Guarantee confidence
+      if (typeof action.confidence !== "number") {
+        action.confidence = 0.5;
       }
-    }
+
+      return action;
+    });
 
     return res.status(200).json(parsed);
 
@@ -214,4 +206,4 @@ Return JSON only.
       message: error.message
     });
   }
-}
+};
