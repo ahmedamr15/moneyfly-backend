@@ -209,7 +209,32 @@ Return JSON only.
       });
     }
 
-    let cleaned = raw.replace(/```json|```/g, "").trim();
+// =============================
+// CLEAN JSON EXTRACTION
+// =============================
+
+const firstBrace = raw.indexOf("{");
+const lastBrace = raw.lastIndexOf("}");
+
+if (firstBrace === -1 || lastBrace === -1) {
+return res.status(500).json({
+error: "AI did not return JSON structure",
+raw: raw
+});
+}
+
+let cleaned = raw.substring(firstBrace, lastBrace + 1);
+
+let parsed;
+
+try {
+parsed = JSON.parse(cleaned);
+} catch (e) {
+return res.status(500).json({
+error: "AI returned malformed JSON",
+raw: cleaned
+});
+}
 
     let parsed;
 
