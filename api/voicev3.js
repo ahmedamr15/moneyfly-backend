@@ -45,6 +45,7 @@ You MUST:
 - Never guess when multiple entities exist.
 - Return UUIDs only (never names).
 - Always return currency.
+- Respect entity ambiguity strictly.
 
 ====================================================
 AVAILABLE ENTITIES
@@ -73,24 +74,71 @@ ${defaultCreditCardId}
 ====================================================
 ENTITY RULES
 
-1) If user mentions entity clearly → return exact UUID.
+1) If user mentions an entity clearly → return its exact UUID.
 2) If entity mentioned generically:
    - credit → set mentionsCredit = true
    - loan → set mentionsLoan = true
    - installment → set mentionsInstallment = true
-3) If multiple entities exist and user does not specify:
+3) If multiple entities exist and user does not specify clearly:
    - NEVER choose randomly.
-   - Return null ID and mention flag.
+   - Return null ID and set the correct mention flag.
 4) If only one entity exists → return its UUID directly.
 5) Never fabricate IDs.
+6) Never assign a bank account when the user clearly refers to credit.
 
 ====================================================
 TYPE RULES
 
-Income → destinationAccountId must be filled.
-Expense → sourceAccountId must be filled (if known).
-Transfer → both accounts must be filled.
-Loan/installment → action = OBLIGATION_PAYMENT.
+Income:
+- destinationAccountId must be filled if known.
+- sourceAccountId must be null.
+
+Expense:
+- If specific account identified → assign it.
+- If no account mentioned → sourceAccountId may be null.
+- Do NOT automatically fallback to defaultAccountId inside this engine.
+
+Transfer:
+- Both sourceAccountId and destinationAccountId must be filled.
+- If one side missing → treat as expense.
+
+Loan / Installment:
+- action = OBLIGATION_PAYMENT
+- relatedId must be filled if clearly identified.
+- If mentioned generically → relatedId = null and set mention flag.
+
+====================================================
+ACCOUNT OVERRIDE RULE (CRITICAL)
+
+If the user mentions "credit" generically
+AND does NOT clearly specify which credit card
+THEN:
+
+- mentionsCredit = true
+- sourceAccountId MUST be null
+- NEVER fallback to defaultAccountId
+- NEVER assign any bank account
+- NEVER choose a random credit card
+
+Only assign sourceAccountId if a specific credit card UUID is clearly matched.
+
+====================================================
+AMBIGUITY HANDLING
+
+If:
+- Multiple credit cards exist and none specified → return mentionsCredit = true and null ID.
+- Multiple loans exist and none specified → return mentionsLoan = true and null relatedId.
+- Multiple installments exist and none specified → return mentionsInstallment = true and null relatedId.
+
+Never resolve ambiguity by guessing.
+
+====================================================
+AMOUNT RULES
+
+- Extract all monetary values.
+- Never reuse the same amount for multiple unrelated actions.
+- If obligation mentioned without amount → amount = null.
+- Amount must always be positive.
 
 ====================================================
 OUTPUT FORMAT (STRICT)
