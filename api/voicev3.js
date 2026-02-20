@@ -25,35 +25,72 @@ module.exports = async function (req, res) {
     if (!message)
       return res.status(400).json({ error: "Message is required" });
 
+    // =====================================================
+    // 🧠 INTELLIGENT MODEL ROUTER (Cost Optimization)
+    // =====================================================
+
+    const text = message.toLowerCase();
+
+    const clauseCount = (text.match(/ و | and /g) || []).length;
+    const numbersCount = (text.match(/\d+/g) || []).length;
+
+    const hasCredit =
+      text.includes("credit") ||
+      text.includes("كريدت") ||
+      text.includes("بطاقة");
+
+    const hasLoan =
+      text.includes("قرض") ||
+      text.includes("loan");
+
+    const hasInstallment =
+      text.includes("قسط") ||
+      text.includes("install");
+
+    const hasTransfer =
+      text.includes("حول") ||
+      text.includes("transfer") ||
+      text.includes("نقل");
+
+    const isComplex =
+      clauseCount > 1 ||
+      numbersCount > 1 ||
+      hasCredit ||
+      hasLoan ||
+      hasInstallment ||
+      hasTransfer;
+
+    const selectedModel = isComplex
+      ? "qwen/qwen3-32b"
+      : "llama-3.1-8b-instant";
+
+    console.log("Selected model:", selectedModel);
+
+    // =====================================================
+    // 🧾 STRICT GLOBAL SYSTEM LANGUAGE (GSL)
+    // =====================================================
+
     const systemPrompt = `
-You are a STRICT deterministic financial action extraction engine.
+You are a deterministic Financial Action Engine.
 
 You are NOT a chatbot.
-You NEVER explain.
-You NEVER add text outside JSON.
-You ONLY return structured JSON.
+You do NOT explain.
+You do NOT add thoughts.
+You return STRICT JSON ONLY.
 
-====================================================
-CORE RESPONSIBILITY
+--------------------------------------------------
+AVAILABLE ENTITIES (UUID-ONLY RESOLUTION)
 
-Convert user voice input into structured financial actions.
+DEFAULT_ACCOUNT_ID:
+${defaultAccountId}
 
-You MUST:
-- Split multiple financial actions.
-- Never merge unrelated numbers.
-- Never invent entities.
-- Never guess when multiple entities exist.
-- Return UUIDs only (never names).
-- Always return currency.
-- Respect entity ambiguity strictly.
-
-====================================================
-AVAILABLE ENTITIES
+DEFAULT_CREDIT_CARD_ID:
+${defaultCreditCardId}
 
 ACCOUNTS:
 ${JSON.stringify(accounts)}
 
-CREDIT CARDS:
+CREDIT_CARDS:
 ${JSON.stringify(creditCards)}
 
 LOANS:
@@ -65,96 +102,58 @@ ${JSON.stringify(installments)}
 CATEGORIES:
 ${JSON.stringify(categories)}
 
-DEFAULT ACCOUNT:
-${defaultAccountId}
+--------------------------------------------------
+SUPPORTED ACTIONS:
 
-DEFAULT CREDIT CARD:
-${defaultCreditCardId}
+LOG_TRANSACTION
+OBLIGATION_PAYMENT
+TRANSFER_FUNDS
 
-====================================================
-ENTITY RULES
+--------------------------------------------------
+RULES:
 
-1) If user mentions an entity clearly → return its exact UUID.
-2) If entity mentioned generically:
-   - credit → set mentionsCredit = true
-   - loan → set mentionsLoan = true
-   - installment → set mentionsInstallment = true
-3) If multiple entities exist and user does not specify clearly:
-   - NEVER choose randomly.
-   - Return null ID and set the correct mention flag.
-4) If only one entity exists → return its UUID directly.
-5) Never fabricate IDs.
-6) Never assign a bank account when the user clearly refers to credit.
+1) Split sentence into independent financial clauses.
+2) Each clause = one action.
+3) NEVER merge amounts.
+4) NEVER invent numbers.
+5) Amount must always be positive.
+6) Use ONLY UUIDs from provided lists.
+7) NEVER return names.
+8) If account unspecified:
+   - Expense → use DEFAULT_ACCOUNT_ID
+   - Income → use DEFAULT_ACCOUNT_ID
+9) If "credit" mentioned:
+   - If only one credit card → use it
+   - If multiple and defaultCreditCardId exists → use it
+   - If ambiguous → sourceAccountId = null and mentionsCredit = true
+10) If loan/installment mentioned:
+   - If only one match → use relatedId
+   - If multiple → relatedId = null and flag mention
+11) Currency:
+   - Detect if stated (USD, EGP, EUR etc.)
+   - Otherwise assume account currency
+12) Confidence:
+   Base 0.5
+   +0.2 exact UUID match
+   +0.2 exact category match
+   +0.1 clear intent
+   Max 1.0
 
-====================================================
-TYPE RULES
-
-Income:
-- destinationAccountId must be filled if known.
-- sourceAccountId must be null.
-
-Expense:
-- If specific account identified → assign it.
-- If no account mentioned → sourceAccountId may be null.
-- Do NOT automatically fallback to defaultAccountId inside this engine.
-
-Transfer:
-- Both sourceAccountId and destinationAccountId must be filled.
-- If one side missing → treat as expense.
-
-Loan / Installment:
-- action = OBLIGATION_PAYMENT
-- relatedId must be filled if clearly identified.
-- If mentioned generically → relatedId = null and set mention flag.
-
-====================================================
-ACCOUNT OVERRIDE RULE (CRITICAL)
-
-If the user mentions "credit" generically
-AND does NOT clearly specify which credit card
-THEN:
-
-- mentionsCredit = true
-- sourceAccountId MUST be null
-- NEVER fallback to defaultAccountId
-- NEVER assign any bank account
-- NEVER choose a random credit card
-
-Only assign sourceAccountId if a specific credit card UUID is clearly matched.
-
-====================================================
-AMBIGUITY HANDLING
-
-If:
-- Multiple credit cards exist and none specified → return mentionsCredit = true and null ID.
-- Multiple loans exist and none specified → return mentionsLoan = true and null relatedId.
-- Multiple installments exist and none specified → return mentionsInstallment = true and null relatedId.
-
-Never resolve ambiguity by guessing.
-
-====================================================
-AMOUNT RULES
-
-- Extract all monetary values.
-- Never reuse the same amount for multiple unrelated actions.
-- If obligation mentioned without amount → amount = null.
-- Amount must always be positive.
-
-====================================================
-OUTPUT FORMAT (STRICT)
+--------------------------------------------------
+STRICT OUTPUT FORMAT:
 
 {
   "actions": [
     {
-      "action": "LOG_TRANSACTION | OBLIGATION_PAYMENT | TRANSFER",
+      "action": "LOG_TRANSACTION | OBLIGATION_PAYMENT | TRANSFER_FUNDS",
       "type": "expense | income | transfer | null",
       "amount": number | null,
-      "currency": "string",
-      "categoryId": "string | null",
-      "subcategoryId": "string | null",
-      "sourceAccountId": "string | null",
-      "destinationAccountId": "string | null",
-      "relatedId": "string | null",
+      "currency": "ISO_CODE | null",
+      "categoryId": "UUID | null",
+      "subcategoryId": "UUID | null",
+      "sourceAccountId": "UUID | null",
+      "destinationAccountId": "UUID | null",
+      "relatedId": "UUID | null",
       "mentionsCredit": boolean,
       "mentionsLoan": boolean,
       "mentionsInstallment": boolean,
@@ -163,11 +162,15 @@ OUTPUT FORMAT (STRICT)
   ]
 }
 
+NO markdown.
+NO explanation.
+NO extra keys.
 Return JSON only.
-No markdown.
-No explanation.
-No text outside JSON.
 `;
+
+    // =====================================================
+    // 🚀 CALL LLM
+    // =====================================================
 
     const response = await fetch(
       "https://api.groq.com/openai/v1/chat/completions",
@@ -178,9 +181,8 @@ No text outside JSON.
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
-          model: "qwen/qwen3-32b",
+          model: selectedModel,
           temperature: 0.1,
-          response_format: { type: "json_object" },
           messages: [
             { role: "system", content: systemPrompt },
             { role: "user", content: message }
@@ -199,20 +201,18 @@ No text outside JSON.
     }
 
     const raw = data.choices?.[0]?.message?.content;
-    if (!raw)
+
+    if (!raw) {
       return res.status(500).json({
         error: "Invalid AI response",
         raw: data
       });
-
-    let cleaned = raw.trim();
-
-    // Extra safety strip (in case model leaks reasoning)
-    if (cleaned.startsWith("<")) {
-      cleaned = cleaned.substring(cleaned.indexOf("{"));
     }
 
+    let cleaned = raw.replace(/```json|```/g, "").trim();
+
     let parsed;
+
     try {
       parsed = JSON.parse(cleaned);
     } catch (e) {
@@ -222,29 +222,33 @@ No text outside JSON.
       });
     }
 
-    // =============================
-    // NORMALIZATION LAYER
-    // =============================
+    // =====================================================
+    // 🔒 NORMALIZATION LAYER
+    // =====================================================
 
     parsed.actions = (parsed.actions || []).map(action => {
 
-      // Force positive amounts
       if (typeof action.amount === "number") {
         action.amount = Math.abs(action.amount);
       }
 
-      // Guarantee booleans
-      action.mentionsCredit = !!action.mentionsCredit;
-      action.mentionsLoan = !!action.mentionsLoan;
-      action.mentionsInstallment = !!action.mentionsInstallment;
+      if (action.type === "expense" && !action.sourceAccountId) {
+        action.sourceAccountId = defaultAccountId || null;
+      }
 
-      // Guarantee confidence
-      if (typeof action.confidence !== "number") {
-        action.confidence = 0.5;
+      if (action.type === "income" && !action.destinationAccountId) {
+        action.destinationAccountId = defaultAccountId || null;
+      }
+
+      if (action.action === "OBLIGATION_PAYMENT" && !action.sourceAccountId) {
+        action.sourceAccountId = defaultAccountId || null;
       }
 
       return action;
     });
+
+    // Confidence filter
+    parsed.actions = parsed.actions.filter(a => a.confidence >= 0.6);
 
     return res.status(200).json(parsed);
 
