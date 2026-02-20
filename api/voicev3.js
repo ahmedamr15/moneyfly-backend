@@ -27,16 +27,22 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: "Message is required" });
 
     const systemPrompt = `
-You are a STRICT and CONSERVATIVE financial action engine.
-Return JSON only. No explanations.
+You are a STRICT FINANCIAL EXECUTION ENGINE.
+Return JSON ONLY.
 
 ---------------------------------------
-ENTITIES
+CRITICAL RULE: UUID ONLY
 
+You MUST return ONLY IDs exactly as provided.
+NEVER return names.
+NEVER return strings.
+If unsure → return REQUEST_CLARIFICATION.
+
+---------------------------------------
 ASSETS:
 ${JSON.stringify(assets)}
 
-CREDIT CARDS:
+CREDIT_CARDS:
 ${JSON.stringify(cards)}
 
 LOANS:
@@ -45,64 +51,60 @@ ${JSON.stringify(loans)}
 INSTALLMENTS:
 ${JSON.stringify(installments)}
 
-CATEGORIES (each has fixed type):
+CATEGORIES:
 ${JSON.stringify(categories)}
 
-DEFAULT ACCOUNT ID:
+DEFAULT_ACCOUNT_ID:
 ${defaultAccountId}
 
-BASE CURRENCY:
+BASE_CURRENCY:
 ${baseCurrency}
 
 ---------------------------------------
-GENERAL RULES
+CLAUSE RULE
 
-1) Each financial clause = one action.
-2) Never merge unrelated numbers.
-3) Never invent numbers.
-4) Amount must always be positive.
-5) If unsure → return REQUEST_CLARIFICATION.
+Split sentence into independent financial clauses.
+Each clause must produce one action.
+Amounts MUST NOT leak between clauses.
 
 ---------------------------------------
 ACCOUNT RULES
 
-- If user says "credit" or "card"
-  → ONLY match CREDIT CARDS.
+If "credit", "card", "visa", "mastercard" appears:
+→ You MUST match ONLY from CREDIT_CARDS.
+→ Ignore ASSETS completely.
 
-- If bank name only mentioned
-  → match ASSETS only.
+If transfer verb appears AND two ASSETS mentioned:
+→ transfer
 
-- If no account mentioned:
-    Expense → sourceAccountId = DEFAULT ACCOUNT ID
-    Income → destinationAccountId = DEFAULT ACCOUNT ID
-
-- Mentioning payment account is NOT transfer.
-
-- Transfer ONLY if two ASSETS are clearly mentioned with transfer verbs.
+If no account mentioned:
+Expense → sourceAccountId = DEFAULT_ACCOUNT_ID
+Income → destinationAccountId = DEFAULT_ACCOUNT_ID
 
 ---------------------------------------
-CATEGORY RULES
+OBLIGATION RULE
 
-1) Only choose from provided categories.
-2) Each category has fixed type (expense or income).
-3) Subcategory must belong to its parent.
-4) If type conflicts with category.type → do NOT select it.
-5) If unsure → categoryId = null and subcategoryId = null.
-
----------------------------------------
-OBLIGATION RULES
-
-If loan or installment name mentioned:
+If loan/installment mentioned:
 → action = OBLIGATION_PAYMENT
-→ relatedId = UUID
-If no amount specified:
-→ amount = null (means full payment)
+If no amount in same clause:
+→ amount = null
 
 ---------------------------------------
-CURRENCY RULES
+CATEGORY RULE
 
-If currency mentioned → use ISO code.
-Else → use baseCurrency.
+Each category has fixed type.
+You MUST match by ID.
+If unsure → categoryId = null.
+
+---------------------------------------
+CONFIDENCE RULE
+
+Base confidence = 0.5
++0.2 exact account match
++0.2 category match
++0.1 currency detected
+Max 0.95
+Never return 1.0
 
 ---------------------------------------
 OUTPUT FORMAT
@@ -148,12 +150,8 @@ Return JSON only.
 
     const data = await response.json();
 
-    if (data.error) {
-      return res.status(400).json({
-        error: "Groq API Error",
-        details: data.error
-      });
-    }
+    if (data.error)
+      return res.status(400).json({ error: "Groq API Error", details: data.error });
 
     const raw = data.choices?.[0]?.message?.content;
     if (!raw)
@@ -166,43 +164,46 @@ Return JSON only.
       parsed = JSON.parse(cleaned);
     } catch (e) {
       return res.status(500).json({
-        error: "Invalid JSON returned by AI",
+        error: "AI did not return valid JSON",
         raw: cleaned
       });
     }
 
-    // -------------------------
-    // SAFE NORMALIZATION LAYER
-    // -------------------------
+    // -----------------------------
+    // STRICT VALIDATION LAYER
+    // -----------------------------
 
-    parsed.actions = (parsed.actions || []).map(action => {
+    const validIds = new Set([
+      ...assets.map(a => a.id),
+      ...cards.map(c => c.id),
+      ...loans.map(l => l.id),
+      ...installments.map(i => i.id),
+      ...categories.map(c => c.categoryId),
+      ...categories.flatMap(c => c.subcategories.map(s => s.id))
+    ]);
 
-      if (typeof action.amount === "number") {
-        action.amount = Math.abs(action.amount);
-      }
+    for (const action of parsed.actions || []) {
+      const idsToCheck = [
+        action.sourceAccountId,
+        action.destinationAccountId,
+        action.categoryId,
+        action.subcategoryId,
+        action.relatedId
+      ].filter(Boolean);
 
-      if (action.action === "LOG_TRANSACTION") {
-
-        if (action.type === "expense") {
-          action.destinationAccountId = null;
-          if (!action.sourceAccountId)
-            action.sourceAccountId = defaultAccountId;
+      for (const id of idsToCheck) {
+        if (!validIds.has(id)) {
+          return res.status(500).json({
+            error: "AI returned non-UUID entity",
+            invalidId: id
+          });
         }
-
-        if (action.type === "income") {
-          action.sourceAccountId = null;
-          if (!action.destinationAccountId)
-            action.destinationAccountId = defaultAccountId;
-        }
       }
 
-      if (action.action === "OBLIGATION_PAYMENT") {
-        if (!action.sourceAccountId)
-          action.sourceAccountId = defaultAccountId;
+      if (action.confidence >= 1.0) {
+        action.confidence = 0.95;
       }
-
-      return action;
-    });
+    }
 
     return res.status(200).json(parsed);
 
