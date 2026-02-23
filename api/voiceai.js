@@ -27,19 +27,21 @@ module.exports = async function (req, res) {
 
     const text = message.toLowerCase();
 
-    // ================= SMART ROUTING =================
+    // =====================================================
+    // SMART MODEL ROUTING
+    // =====================================================
 
     const clauseCount = (text.match(/ و | and /g) || []).length;
     const numbersCount = (text.match(/\d+/g) || []).length;
 
-    const hasComplexIntent =
+    const complexIntent =
       text.includes("credit") ||
       text.includes("كريدت") ||
       text.includes("قرض") ||
       text.includes("install") ||
       text.includes("حول");
 
-    let modelChain = [];
+    let modelChain;
 
     if (clauseCount >= 2 || numbersCount >= 3) {
       modelChain = [
@@ -47,7 +49,7 @@ module.exports = async function (req, res) {
         "meta-llama/llama-4-scout-17b-16e-instruct",
         "llama-3.1-8b-instant"
       ];
-    } else if (hasComplexIntent) {
+    } else if (complexIntent) {
       modelChain = [
         "meta-llama/llama-4-scout-17b-16e-instruct",
         "llama-3.1-8b-instant"
@@ -60,25 +62,32 @@ module.exports = async function (req, res) {
     }
 
     const systemPrompt = `
-You are a deterministic financial action parser.
+You are a deterministic financial intent parser.
 
-You are NOT a chatbot.
-You must return STRICT JSON only.
+Return STRICT JSON only.
 No explanation.
 No markdown.
-No text before or after JSON.
 
 ALLOWED ACTION VALUES:
-- LOG_TRANSACTION
-- TRANSFER_FUNDS
-- OBLIGATION_PAYMENT
+LOG_TRANSACTION
+TRANSFER_FUNDS
+OBLIGATION_PAYMENT
 
 ALLOWED TYPE VALUES:
-- expense
-- income
-- transfer
+expense
+income
+transfer
 
-RETURN FORMAT STRICTLY:
+TITLE RULES:
+- Must be English
+- Max 3 words
+- No amounts
+- No verbs like paid/bought/spent
+- Examples: Chips, Netflix, Uber, Coffee, Credit Card Payment, Loan Payment, Transfer
+
+Currency must be ISO 3-letter code (EGP, USD, EUR).
+
+RETURN FORMAT:
 
 {
   "actions": [
@@ -87,7 +96,7 @@ RETURN FORMAT STRICTLY:
       "type": "expense | income | transfer",
       "title": "string",
       "amount": number | null,
-      "currency": "string | null",
+      "currency": "ISO_CODE | null",
       "categoryId": "string | null",
       "sourceAccountId": "string | null",
       "destinationAccountId": "string | null",
@@ -99,19 +108,11 @@ RETURN FORMAT STRICTLY:
     }
   ]
 }
-
-Rules:
-- NEVER return action names outside allowed list.
-- NEVER return single object. Always return "actions" array.
-- NEVER invent IDs.
-- If unknown field, return null.
-- If amount missing, return null.
-- Confidence must be between 0 and 1.
 `;
 
     async function callModel(model) {
       try {
-        const fetchPromise = fetch(
+        const response = await fetch(
           "https://api.groq.com/openai/v1/chat/completions",
           {
             method: "POST",
@@ -130,13 +131,7 @@ Rules:
           }
         );
 
-        const timeoutPromise = new Promise((_, reject) =>
-          setTimeout(() => reject(new Error("timeout")), 6000)
-        );
-
-        const response = await Promise.race([fetchPromise, timeoutPromise]);
-
-        if (!response || !response.ok) return null;
+        if (!response.ok) return null;
 
         const data = await response.json();
         return data.choices?.[0]?.message?.content || null;
@@ -160,7 +155,7 @@ Rules:
     const lastBrace = raw.lastIndexOf("}");
 
     if (firstBrace === -1 || lastBrace === -1)
-      return res.status(500).json({ error: "Malformed response" });
+      return res.status(500).json({ error: "Malformed AI response" });
 
     let parsed;
     try {
@@ -169,10 +164,25 @@ Rules:
       return res.status(500).json({ error: "Invalid JSON returned by AI" });
     }
 
-    parsed.actions = (parsed.actions || []).map(action => {
+    if (!parsed.actions || !Array.isArray(parsed.actions))
+      return res.status(500).json({ error: "Invalid AI schema" });
+
+    // =====================================================
+    // NORMALIZATION & FINANCIAL LOGIC
+    // =====================================================
+
+    parsed.actions = parsed.actions.map(action => {
 
       if (typeof action.amount === "number")
         action.amount = Math.abs(action.amount);
+
+      // ISO currency normalization
+      if (action.currency) {
+        const c = action.currency.toUpperCase();
+        if (c.includes("EGP") || c.includes("جنيه")) action.currency = "EGP";
+        else if (c.includes("USD") || c.includes("دولار")) action.currency = "USD";
+        else if (c.includes("EUR") || c.includes("يورو")) action.currency = "EUR";
+      }
 
       const settlementKeyword =
         text.includes("سدد") ||
@@ -180,7 +190,7 @@ Rules:
         text.includes("due") ||
         text.includes("settle");
 
-      // ===== CREDIT LOGIC =====
+      // CREDIT LOGIC
       if (action.mentionsCredit) {
 
         if (!action.amount || settlementKeyword) {
@@ -188,7 +198,7 @@ Rules:
           action.type = "transfer";
           action.sourceAccountId = defaultAccountId;
           action.destinationAccountId = defaultCreditCardId;
-          action.title = "Credit Settlement";
+          action.title = "Credit Card Payment";
         } else {
           action.action = "LOG_TRANSACTION";
           action.type = "expense";
@@ -197,23 +207,26 @@ Rules:
         }
       }
 
-      // ===== EXPENSE =====
+      // EXPENSE fallback
       if (action.type === "expense" && !action.sourceAccountId)
         action.sourceAccountId = defaultAccountId;
 
-      // ===== INCOME =====
+      // INCOME fallback
       if (action.type === "income" && !action.destinationAccountId)
         action.destinationAccountId = defaultAccountId;
 
-      // ===== OBLIGATION =====
+      // OBLIGATION fallback
       if (action.action === "OBLIGATION_PAYMENT") {
         action.type = "expense";
         if (!action.sourceAccountId)
           action.sourceAccountId = defaultAccountId;
       }
 
-      if (!action.title || action.title.length < 2)
-        action.title = "Transaction";
+      // Title sanitizer
+      if (!action.title) action.title = "Transaction";
+      action.title = action.title.replace(/\d+/g, "").trim();
+      if (action.title.length > 30)
+        action.title = action.title.substring(0, 30);
 
       if (!action.confidence || action.confidence < 0.6)
         action.requiresClarification = true;
