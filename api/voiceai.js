@@ -27,9 +27,9 @@ module.exports = async function (req, res) {
 
     const text = message.toLowerCase();
 
-    // =====================================================
-    // 1️⃣ LLM INTENT PARSER (MULTI ACTION SUPPORT)
-    // =====================================================
+    // ===============================
+    // LLM SYSTEM PROMPT
+    // ===============================
 
     const systemPrompt = `
 You are a financial intent parser.
@@ -37,41 +37,56 @@ You are a financial intent parser.
 Return STRICT JSON only.
 Support multiple actions.
 
-Extract an array of actions.
-
 Each action must include:
-- intent (expense | income | transfer | obligation)
-- amount (number or null)
-- currency (ISO or null)
-- title (short English, no numbers)
-- rawSourceName
-- rawDestinationName
-- rawRelatedName
-- mentionsCredit
-- mentionsLoan
-- mentionsInstallment
-- confidence
+
+intent: expense | income | transfer | obligation
+amount: number or null
+currency: ISO or null
+title: short English title (max 3 words, no numbers)
+rawSourceName
+rawDestinationName
+rawRelatedName
+rawCategoryName
+mentionsCredit
+mentionsLoan
+mentionsInstallment
+confidence
 
 Return format:
 
 {
-  "actions": [
-    {
-      "intent": "",
-      "amount": null,
-      "currency": null,
-      "title": "",
-      "rawSourceName": null,
-      "rawDestinationName": null,
-      "rawRelatedName": null,
-      "mentionsCredit": false,
-      "mentionsLoan": false,
-      "mentionsInstallment": false,
-      "confidence": 0.9
-    }
-  ]
+  "actions": [ { ... } ]
 }
 `;
+
+    async function callLLM(model) {
+      try {
+        const response = await fetch(
+          "https://api.groq.com/openai/v1/chat/completions",
+          {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${API_KEY}`,
+              "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+              model,
+              temperature: 0,
+              messages: [
+                { role: "system", content: systemPrompt },
+                { role: "user", content: message }
+              ]
+            })
+          }
+        );
+
+        if (!response.ok) return null;
+        const data = await response.json();
+        return data.choices?.[0]?.message?.content || null;
+      } catch {
+        return null;
+      }
+    }
 
     async function callLLMChain() {
       const models = [
@@ -81,39 +96,13 @@ Return format:
       ];
 
       for (let model of models) {
-        try {
-          const response = await fetch(
-            "https://api.groq.com/openai/v1/chat/completions",
-            {
-              method: "POST",
-              headers: {
-                Authorization: `Bearer ${API_KEY}`,
-                "Content-Type": "application/json"
-              },
-              body: JSON.stringify({
-                model,
-                temperature: 0,
-                messages: [
-                  { role: "system", content: systemPrompt },
-                  { role: "user", content: message }
-                ]
-              })
-            }
-          );
-
-          if (!response.ok) continue;
-          const data = await response.json();
-          const content = data.choices?.[0]?.message?.content;
-          if (content && content.includes("{")) {
-            console.log("Model used:", model);
-            return content;
-          }
-        } catch (e) {
-          continue;
+        const result = await callLLM(model);
+        if (result && result.includes("{")) {
+          console.log("Model used:", model);
+          return result;
         }
       }
-
-      throw new Error("All LLMs failed");
+      throw new Error("All models failed");
     }
 
     function extractJSON(text) {
@@ -128,9 +117,9 @@ Return format:
     if (!parsed.actions || !Array.isArray(parsed.actions))
       throw new Error("Invalid AI schema");
 
-    // =====================================================
-    // 2️⃣ DETERMINISTIC RESOLVER
-    // =====================================================
+    // ===============================
+    // RESOLVER HELPERS
+    // ===============================
 
     function matchByName(list, name) {
       if (!name) return null;
@@ -142,25 +131,39 @@ Return format:
       return null;
     }
 
-    function resolveCurrency(parsedCurrency, accountCurrency) {
+    function resolveCurrency(parsedCurrency, baseCurrency) {
       const map = {
         egp: "EGP",
-        جنيه: "EGP",
         usd: "USD",
-        دولار: "USD",
         eur: "EUR",
-        يورو: "EUR",
         sar: "SAR",
-        ريال: "SAR",
         aed: "AED",
-        درهم: "AED",
         kwd: "KWD",
         qar: "QAR",
         omr: "OMR",
         bhd: "BHD"
       };
-      if (!parsedCurrency) return accountCurrency;
-      return map[parsedCurrency.toLowerCase()] || accountCurrency;
+      if (!parsedCurrency) return baseCurrency;
+      return map[parsedCurrency.toLowerCase()] || baseCurrency;
+    }
+
+    function resolveCategory(rawCategoryName) {
+      if (!rawCategoryName) return null;
+
+      const exact = categories.find(
+        c => c.name.toLowerCase() === rawCategoryName.toLowerCase()
+      );
+      if (exact) return exact.id;
+
+      const partial = categories.find(c =>
+        rawCategoryName.toLowerCase().includes(c.name.toLowerCase())
+      );
+      if (partial) return partial.id;
+
+      const other = categories.find(
+        c => c.name.toLowerCase() === "other"
+      );
+      return other ? other.id : null;
     }
 
     const finalActions = [];
@@ -169,7 +172,7 @@ Return format:
       const action = {
         action: null,
         type: null,
-        title: item.title || "Transaction",
+        title: (item.title || "Transaction").replace(/\d+/g, "").trim(),
         amount: item.amount ? Math.abs(item.amount) : null,
         currency: null,
         categoryId: null,
@@ -180,7 +183,9 @@ Return format:
         confidence: item.confidence || 0.9
       };
 
-      // ========= TRANSFER =========
+      // =====================
+      // TRANSFER
+      // =====================
       if (item.intent === "transfer") {
         action.action = "TRANSFER_FUNDS";
         action.type = "transfer";
@@ -191,9 +196,6 @@ Return format:
         if (source === "AMBIGUOUS" || dest === "AMBIGUOUS")
           action.requiresClarification = true;
 
-        if (!source || !dest)
-          action.requiresClarification = true;
-
         action.sourceAccountId = source?.id || null;
         action.destinationAccountId = dest?.id || null;
 
@@ -201,9 +203,11 @@ Return format:
         action.currency = resolveCurrency(item.currency, base);
       }
 
-      // ========= CREDIT =========
+      // =====================
+      // CREDIT
+      // =====================
       else if (item.mentionsCredit) {
-        let card =
+        const card =
           creditCards.length === 1
             ? creditCards[0]
             : defaultCreditCardId
@@ -215,10 +219,10 @@ Return format:
 
         const settlement =
           text.includes("سدد") ||
-          text.includes("statement") ||
-          text.includes("due");
+          text.includes("due") ||
+          text.includes("statement");
 
-        if (settlement && !item.intent === "expense") {
+        if (!item.amount || settlement) {
           action.action = "TRANSFER_FUNDS";
           action.type = "transfer";
           action.sourceAccountId = defaultAccountId;
@@ -229,16 +233,20 @@ Return format:
           action.sourceAccountId = card?.id || null;
         }
 
-        const base = card?.currency || "EGP";
-        action.currency = resolveCurrency(item.currency, base);
+        action.currency = resolveCurrency(
+          item.currency,
+          card?.currency || "EGP"
+        );
       }
 
-      // ========= LOAN / INSTALLMENT =========
+      // =====================
+      // LOAN / INSTALLMENT
+      // =====================
       else if (item.mentionsLoan || item.mentionsInstallment) {
         const pool = [...loans, ...installments];
         const match = matchByName(pool, item.rawRelatedName);
 
-        if (match === "AMBIGUOUS" || !match)
+        if (!match || match === "AMBIGUOUS")
           action.requiresClarification = true;
 
         action.action = "OBLIGATION_PAYMENT";
@@ -252,32 +260,43 @@ Return format:
         action.currency = resolveCurrency(item.currency, base);
       }
 
-      // ========= NORMAL EXPENSE / INCOME =========
+      // =====================
+      // NORMAL EXPENSE / INCOME
+      // =====================
       else {
         action.action = "LOG_TRANSACTION";
         action.type = item.intent === "income" ? "income" : "expense";
 
         if (action.type === "expense")
           action.sourceAccountId = defaultAccountId;
-        else action.destinationAccountId = defaultAccountId;
+
+        if (action.type === "income")
+          action.destinationAccountId = defaultAccountId;
 
         const base =
           accounts.find(a => a.id === defaultAccountId)?.currency || "EGP";
 
         action.currency = resolveCurrency(item.currency, base);
       }
-if (
-  action.action === "TRANSFER_FUNDS" &&
-  action.sourceAccountId &&
-  action.destinationAccountId
-) {
-  const sourceAcc = accounts.find(a => a.id === action.sourceAccountId);
-  const destAcc = accounts.find(a => a.id === action.destinationAccountId);
 
-  if (sourceAcc && destAcc && sourceAcc.currency !== destAcc.currency) {
-    action.requiresClarification = true;
-  }
-}
+      // FX conflict protection
+      if (
+        action.action === "TRANSFER_FUNDS" &&
+        action.sourceAccountId &&
+        action.destinationAccountId
+      ) {
+        const sourceAcc = accounts.find(a => a.id === action.sourceAccountId);
+        const destAcc = accounts.find(a => a.id === action.destinationAccountId);
+        if (sourceAcc && destAcc && sourceAcc.currency !== destAcc.currency) {
+          action.requiresClarification = true;
+        }
+      }
+
+      // CATEGORY
+      if (action.action === "LOG_TRANSACTION") {
+        action.categoryId = resolveCategory(item.rawCategoryName);
+      }
+
       if (!action.amount && action.action !== "OBLIGATION_PAYMENT")
         action.requiresClarification = true;
 
