@@ -26,11 +26,10 @@ module.exports = async function (req, res) {
       return res.status(400).json({ error: "Message is required" });
 
     // =====================================================
-    // 🧠 INTELLIGENT MODEL ROUTER (Cost Optimization)
+    // 🧠 SMART MODEL TIER ROUTER (Cost Optimized)
     // =====================================================
 
     const text = message.toLowerCase();
-
     const clauseCount = (text.match(/ و | and /g) || []).length;
     const numbersCount = (text.match(/\d+/g) || []).length;
 
@@ -60,14 +59,41 @@ module.exports = async function (req, res) {
       hasInstallment ||
       hasTransfer;
 
-    const selectedModel = isComplex
-      ? "qwen/qwen3-32b"
-      : "llama-3.1-8b-instant";
+    const modelPools = {
+      simple: [
+        "llama-3.1-8b-instant",
+        "allam-2-7b"
+      ],
+      medium: [
+        "meta-llama/llama-4-scout-17b-16e-instruct",
+        "moonshotai/kimi-k2-instruct"
+      ],
+      complex: [
+        "qwen/qwen3-32b",
+        "llama-3.3-70b-versatile"
+      ]
+    };
 
+    function pickModel(tier) {
+      const pool = modelPools[tier];
+      return pool[Math.floor(Math.random() * pool.length)];
+    }
+
+    let tier;
+
+    if (!isComplex && clauseCount === 0 && numbersCount === 1) {
+      tier = "simple";
+    } else if (isComplex && clauseCount <= 2) {
+      tier = "medium";
+    } else {
+      tier = "complex";
+    }
+
+    const selectedModel = pickModel(tier);
     console.log("Selected model:", selectedModel);
 
     // =====================================================
-    // 🧾 STRICT GLOBAL SYSTEM LANGUAGE (GSL)
+    // 🧾 STRICT SYSTEM PROMPT
     // =====================================================
 
     const systemPrompt = `
@@ -112,7 +138,7 @@ RULES:
 4) NEVER invent numbers.
 5) Amount must always be positive.
 6) Use ONLY UUIDs from provided lists.
-7) NEVER return names.
+7) NEVER return names (only UUIDs).
 8) If account unspecified:
    - Expense → DEFAULT_ACCOUNT_ID
    - Income → DEFAULT_ACCOUNT_ID
@@ -140,6 +166,7 @@ STRICT OUTPUT FORMAT:
     {
       "action": "LOG_TRANSACTION | OBLIGATION_PAYMENT | TRANSFER_FUNDS",
       "type": "expense | income | transfer | null",
+      "title": "string | null",
       "amount": number | null,
       "currency": "ISO_CODE | null",
       "categoryId": "UUID | null",
@@ -155,14 +182,19 @@ STRICT OUTPUT FORMAT:
   ]
 }
 
-Return JSON only.
-No markdown.
-No explanation.
-No extra keys.
+TITLE RULES:
+
+1) Title is REQUIRED for LOG_TRANSACTION.
+2) Title must represent purchased item or income source.
+3) Keep it short (1–3 words).
+4) Do NOT use category name as title unless nothing else extractable.
+5) If nothing extractable → return "General".
+6) For TRANSFER_FUNDS → title = "Transfer".
+7) For OBLIGATION_PAYMENT → title = obligation name.
 `;
 
     // =====================================================
-    // 🚀 CALL LLM
+    // 🚀 CALL GROQ
     // =====================================================
 
     const response = await fetch(
@@ -203,7 +235,7 @@ No extra keys.
     }
 
     // =====================================================
-    // 🔒 ROBUST JSON EXTRACTION (Removes <think>)
+    // 🔒 ROBUST JSON EXTRACTION
     // =====================================================
 
     const firstBrace = raw.indexOf("{");
@@ -216,7 +248,7 @@ No extra keys.
       });
     }
 
-    let cleaned = raw.substring(firstBrace, lastBrace + 1);
+    const cleaned = raw.substring(firstBrace, lastBrace + 1);
 
     let parsed;
 
@@ -251,11 +283,23 @@ No extra keys.
         action.sourceAccountId = defaultAccountId || null;
       }
 
+      // Title safety
+      if (action.action === "LOG_TRANSACTION") {
+        if (!action.title || action.title.trim() === "") {
+          action.title = "General";
+        }
+      }
+
+      if (action.action === "TRANSFER_FUNDS") {
+        action.title = "Transfer";
+      }
+
+      if (action.action === "OBLIGATION_PAYMENT" && !action.title) {
+        action.title = "Obligation Payment";
+      }
+
       return action;
     });
-
-    // Confidence filter
-    //parsed.actions = parsed.actions.filter(a => a.confidence >= 0.6);
 
     return res.status(200).json(parsed);
 
