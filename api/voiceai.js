@@ -14,12 +14,7 @@ module.exports = async function (req, res) {
     const {
       message,
       defaultAccountId = null,
-      defaultCreditCardId = null,
-      accounts = [],
-      creditCards = [],
-      loans = [],
-      installments = [],
-      categories = []
+      defaultCreditCardId = null
     } = req.body;
 
     if (!message)
@@ -27,9 +22,7 @@ module.exports = async function (req, res) {
 
     const text = message.toLowerCase();
 
-    // =====================================================
-    // SMART MODEL ROUTING
-    // =====================================================
+    // ================= SMART ROUTING =================
 
     const clauseCount = (text.match(/ و | and /g) || []).length;
     const numbersCount = (text.match(/\d+/g) || []).length;
@@ -81,9 +74,17 @@ transfer
 TITLE RULES:
 - Must be English
 - Max 3 words
-- No amounts
-- No verbs like paid/bought/spent
-- Examples: Chips, Netflix, Uber, Coffee, Credit Card Payment, Loan Payment, Transfer
+- No numbers
+- No currency
+- Merchant or purpose name only
+Examples:
+Chips
+Netflix
+Uber
+Coffee
+Credit Card Payment
+Loan Payment
+Transfer
 
 Currency must be ISO 3-letter code (EGP, USD, EUR).
 
@@ -167,11 +168,19 @@ RETURN FORMAT:
     if (!parsed.actions || !Array.isArray(parsed.actions))
       return res.status(500).json({ error: "Invalid AI schema" });
 
-    // =====================================================
-    // NORMALIZATION & FINANCIAL LOGIC
-    // =====================================================
+    // ================= NORMALIZATION =================
+
+    function cleanNullStrings(obj) {
+      Object.keys(obj).forEach(key => {
+        if (obj[key] === "null" || obj[key] === "NULL")
+          obj[key] = null;
+      });
+      return obj;
+    }
 
     parsed.actions = parsed.actions.map(action => {
+
+      action = cleanNullStrings(action);
 
       if (typeof action.amount === "number")
         action.amount = Math.abs(action.amount);
@@ -190,16 +199,19 @@ RETURN FORMAT:
         text.includes("due") ||
         text.includes("settle");
 
-      // CREDIT LOGIC
+      // ================= CREDIT LOGIC =================
+
       if (action.mentionsCredit) {
 
         if (!action.amount || settlementKeyword) {
+          // Settlement
           action.action = "TRANSFER_FUNDS";
           action.type = "transfer";
           action.sourceAccountId = defaultAccountId;
           action.destinationAccountId = defaultCreditCardId;
           action.title = "Credit Card Payment";
         } else {
+          // Purchase
           action.action = "LOG_TRANSACTION";
           action.type = "expense";
           action.sourceAccountId = defaultCreditCardId;
@@ -207,24 +219,26 @@ RETURN FORMAT:
         }
       }
 
-      // EXPENSE fallback
+      // ================= FALLBACKS =================
+
       if (action.type === "expense" && !action.sourceAccountId)
         action.sourceAccountId = defaultAccountId;
 
-      // INCOME fallback
       if (action.type === "income" && !action.destinationAccountId)
         action.destinationAccountId = defaultAccountId;
 
-      // OBLIGATION fallback
       if (action.action === "OBLIGATION_PAYMENT") {
         action.type = "expense";
         if (!action.sourceAccountId)
           action.sourceAccountId = defaultAccountId;
       }
 
-      // Title sanitizer
+      // ================= TITLE SANITIZER =================
+
       if (!action.title) action.title = "Transaction";
+
       action.title = action.title.replace(/\d+/g, "").trim();
+
       if (action.title.length > 30)
         action.title = action.title.substring(0, 30);
 
