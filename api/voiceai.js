@@ -13,8 +13,8 @@ module.exports = async function (req, res) {
 
     const {
       message,
-      defaultAccountId = null,          // for income + obligations
-      defaultPaymentMethodId = null,    // NEW: for purchases
+      defaultAccountId = null,
+      defaultPaymentMethodId = null,
       accounts = [],
       creditCards = [],
       loans = [],
@@ -28,32 +28,15 @@ module.exports = async function (req, res) {
     const text = message.toLowerCase();
 
     // ===============================
-    // LLM PROMPT
+    // MODEL ROTATION (Quota Safe)
     // ===============================
 
-    const systemPrompt = `
-You are a financial intent parser.
-Return STRICT JSON only.
-Support multiple actions.
-
-Each action must include:
-
-intent: expense | income | transfer | obligation
-amount: number or null
-currency: ISO or null
-title: short English title (max 3 words, no numbers)
-rawSourceName
-rawDestinationName
-rawRelatedName
-rawCategoryName
-mentionsCredit
-mentionsLoan
-mentionsInstallment
-confidence
-
-Return:
-{ "actions": [ ... ] }
-`;
+    const modelPool = [
+      "meta-llama/llama-4-scout-17b-16e-instruct",
+      "qwen/qwen3-32b",
+      "llama-3.1-8b-instant",
+      "allam-2-7b"
+    ];
 
     async function callLLM(model) {
       try {
@@ -79,19 +62,14 @@ Return:
         if (!response.ok) return null;
         const data = await response.json();
         return data.choices?.[0]?.message?.content || null;
+
       } catch {
         return null;
       }
     }
 
     async function callLLMChain() {
-      const models = [
-        "meta-llama/llama-4-scout-17b-16e-instruct",
-        "qwen/qwen3-32b",
-        "llama-3.1-8b-instant"
-      ];
-
-      for (let model of models) {
+      for (let model of modelPool) {
         const result = await callLLM(model);
         if (result && result.includes("{")) {
           console.log("Model used:", model);
@@ -100,6 +78,45 @@ Return:
       }
       throw new Error("All models failed");
     }
+
+    // ===============================
+    // STRICT CATEGORY PROMPT
+    // ===============================
+
+    const categoryNames = categories.map(c => c.name);
+
+    const systemPrompt = `
+You are a deterministic financial parser.
+Return STRICT JSON only.
+
+CATEGORIES LIST:
+${JSON.stringify(categoryNames)}
+
+CATEGORY RULES:
+You MUST return rawCategoryName.
+It MUST match exactly one name from CATEGORIES LIST.
+If unclear, return "Other".
+Never return null.
+Never invent category names.
+
+Each action must include:
+
+intent: expense | income | transfer | obligation
+amount: number or null
+currency: ISO or null
+title: short English title (max 3 words, no numbers)
+rawSourceName
+rawDestinationName
+rawRelatedName
+rawCategoryName
+mentionsCredit
+mentionsLoan
+mentionsInstallment
+confidence
+
+Return:
+{ "actions": [ ... ] }
+`;
 
     function extractJSON(text) {
       const match = text.match(/\{[\s\S]*\}/);
@@ -143,28 +160,31 @@ Return:
       return map[parsedCurrency.toLowerCase()] || baseCurrency;
     }
 
-    function resolveCategory(rawCategoryName) {
-      if (!rawCategoryName) return null;
+    function resolveCategoryStrict(rawCategoryName) {
+      if (!rawCategoryName) {
+        const other = categories.find(c =>
+          c.name.toLowerCase() === "other"
+        );
+        return other ? other.id : null;
+      }
 
       const exact = categories.find(
         c => c.name.toLowerCase() === rawCategoryName.toLowerCase()
       );
-      if (exact) return exact.id;
 
-      const partial = categories.find(c =>
-        rawCategoryName.toLowerCase().includes(c.name.toLowerCase())
-      );
-      if (partial) return partial.id;
+      if (exact) return exact.id;
 
       const other = categories.find(
         c => c.name.toLowerCase() === "other"
       );
+
       return other ? other.id : null;
     }
 
     const finalActions = [];
 
     for (let item of parsed.actions) {
+
       const action = {
         action: null,
         type: null,
@@ -203,16 +223,18 @@ Return:
       // LOAN / INSTALLMENT
       // =====================
       else if (item.mentionsLoan || item.mentionsInstallment) {
+
         const pool = [...loans, ...installments];
         const match = matchByName(pool, item.rawRelatedName);
+
+        action.action = "OBLIGATION_PAYMENT";
+        action.type = "expense";
 
         if (!match || match === "AMBIGUOUS")
           action.requiresClarification = true;
 
-        action.action = "OBLIGATION_PAYMENT";
-        action.type = "expense";
-        action.sourceAccountId = defaultAccountId;
         action.relatedId = match?.id || null;
+        action.sourceAccountId = defaultAccountId;
 
         const base =
           accounts.find(a => a.id === defaultAccountId)?.currency || "EGP";
@@ -221,13 +243,13 @@ Return:
       }
 
       // =====================
-      // NORMAL EXPENSE / INCOME
+      // INCOME / EXPENSE
       // =====================
       else {
+
         action.action = "LOG_TRANSACTION";
         action.type = item.intent === "income" ? "income" : "expense";
 
-        // ===== INCOME =====
         if (action.type === "income") {
           action.destinationAccountId = defaultAccountId;
           action.currency = resolveCurrency(
@@ -236,8 +258,8 @@ Return:
           );
         }
 
-        // ===== EXPENSE PURCHASE (NEW ENGINE) =====
         else {
+
           const explicit = matchByName(
             [...accounts, ...creditCards],
             item.rawSourceName
@@ -252,12 +274,14 @@ Return:
             if (creditCards.length === 1) {
               action.sourceAccountId = creditCards[0].id;
             }
+
             else if (
               defaultPaymentMethodId &&
               creditCards.some(c => c.id === defaultPaymentMethodId)
             ) {
               action.sourceAccountId = defaultPaymentMethodId;
             }
+
             else {
               action.requiresClarification = true;
             }
@@ -295,9 +319,9 @@ Return:
         }
       }
 
-      // CATEGORY
+      // Category (only for transactions)
       if (action.action === "LOG_TRANSACTION") {
-        action.categoryId = resolveCategory(item.rawCategoryName);
+        action.categoryId = resolveCategoryStrict(item.rawCategoryName);
       }
 
       if (!action.amount && action.action !== "OBLIGATION_PAYMENT")
