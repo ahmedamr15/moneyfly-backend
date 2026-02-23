@@ -28,138 +28,50 @@ module.exports = async function (req, res) {
     const text = message.toLowerCase();
 
     // =====================================================
-    // 🧠 SMART TIER ROUTING
+    // SMART ROUTING WITH FALLBACK CHAIN
     // =====================================================
 
     const clauseCount = (text.match(/ و | and /g) || []).length;
     const numbersCount = (text.match(/\d+/g) || []).length;
 
-    const hasCredit =
+    const hasStructuredIntent =
       text.includes("credit") ||
       text.includes("كريدت") ||
-      text.includes("بطاقة");
-
-    const hasLoan =
       text.includes("قرض") ||
-      text.includes("loan");
-
-    const hasInstallment =
-      text.includes("قسط") ||
-      text.includes("install");
-
-    const hasTransfer =
-      text.includes("حول") ||
-      text.includes("transfer") ||
-      text.includes("نقل");
+      text.includes("install") ||
+      text.includes("حول");
 
     let modelChain = [];
 
-    // Tier 3 – Complex
     if (clauseCount >= 2 || numbersCount >= 3) {
       modelChain = [
         "qwen/qwen3-32b",
         "meta-llama/llama-4-scout-17b-16e-instruct",
         "llama-3.1-8b-instant"
       ];
-    }
-    // Tier 2 – Structured
-    else if (hasCredit || hasLoan || hasInstallment || hasTransfer) {
+    } else if (hasStructuredIntent) {
       modelChain = [
         "meta-llama/llama-4-scout-17b-16e-instruct",
         "llama-3.1-8b-instant"
       ];
-    }
-    // Tier 1 – Simple
-    else {
+    } else {
       modelChain = [
         "allam-2-7b",
         "llama-3.1-8b-instant"
       ];
     }
 
-    // =====================================================
-    // 🧾 STRICT SYSTEM PROMPT V3
-    // =====================================================
-
     const systemPrompt = `
-You are a deterministic Financial Action Engine.
-
-Return STRICT JSON ONLY.
+You are a financial intent parser.
+Return STRICT JSON only.
 No explanation.
-No markdown.
-No comments.
 
-DEFAULT_ACCOUNT_ID:
-${defaultAccountId}
-
-DEFAULT_CREDIT_CARD_ID:
-${defaultCreditCardId}
-
-ACCOUNTS:
-${JSON.stringify(accounts)}
-
-CREDIT_CARDS:
-${JSON.stringify(creditCards)}
-
-LOANS:
-${JSON.stringify(loans)}
-
-INSTALLMENTS:
-${JSON.stringify(installments)}
-
-CATEGORIES:
-${JSON.stringify(categories)}
-
-SUPPORTED ACTIONS:
-LOG_TRANSACTION
-OBLIGATION_PAYMENT
-TRANSFER_FUNDS
-
-RULES:
-
-1) Split into independent clauses.
-2) NEVER merge amounts.
-3) NEVER invent numbers.
-4) Amount must be positive.
-5) Use ONLY provided UUIDs.
-6) Expense → destinationAccountId MUST be null.
-7) Income → sourceAccountId MUST be null.
-8) Transfer → both source and destination required.
-9) OBLIGATION_PAYMENT → type MUST be "expense".
-10) TITLE RULE:
-   - Must represent purchased item or payment target.
-   - NEVER generic verbs like "دفعت".
-   - Credit payment → "Credit Card Payment".
-   - Transfer → "Transfer".
-11) Confidence max 1.0.
-
-STRICT OUTPUT FORMAT:
-
-{
-  "actions": [
-    {
-      "action": "LOG_TRANSACTION | OBLIGATION_PAYMENT | TRANSFER_FUNDS",
-      "type": "expense | income | transfer",
-      "title": "string",
-      "amount": number | null,
-      "currency": "ISO_CODE | null",
-      "categoryId": "UUID | null",
-      "subcategoryId": "UUID | null",
-      "sourceAccountId": "UUID | null",
-      "destinationAccountId": "UUID | null",
-      "relatedId": "UUID | null",
-      "mentionsCredit": boolean,
-      "mentionsLoan": boolean,
-      "mentionsInstallment": boolean,
-      "confidence": number
-    }
-  ]
-}
+Extract:
+action, type, title, amount, currency,
+categoryId, sourceAccountId,
+destinationAccountId, relatedId,
+mentionsCredit, mentionsLoan, mentionsInstallment, confidence.
 `;
-
-    // =====================================================
-    // 🚀 SAFE MODEL CALL WITH FALLBACK
-    // =====================================================
 
     async function callModel(model) {
       const controller = new AbortController();
@@ -171,7 +83,7 @@ STRICT OUTPUT FORMAT:
           {
             method: "POST",
             headers: {
-              Authorization: `Bearer ${API_KEY}`,
+              Authorization: \`Bearer \${API_KEY}\`,
               "Content-Type": "application/json"
             },
             body: JSON.stringify({
@@ -187,12 +99,12 @@ STRICT OUTPUT FORMAT:
         );
 
         clearTimeout(timeout);
-
-        if (!response.ok) throw new Error("Model failed");
+        if (!response.ok) return null;
 
         const data = await response.json();
         return data.choices?.[0]?.message?.content || null;
-      } catch (err) {
+
+      } catch {
         clearTimeout(timeout);
         return null;
       }
@@ -202,10 +114,7 @@ STRICT OUTPUT FORMAT:
 
     for (let model of modelChain) {
       raw = await callModel(model);
-      if (raw) {
-        console.log("Model used:", model);
-        break;
-      }
+      if (raw) break;
     }
 
     if (!raw)
@@ -214,35 +123,102 @@ STRICT OUTPUT FORMAT:
     const firstBrace = raw.indexOf("{");
     const lastBrace = raw.lastIndexOf("}");
     if (firstBrace === -1 || lastBrace === -1)
-      return res.status(500).json({ error: "Malformed AI response" });
+      return res.status(500).json({ error: "Malformed response" });
 
     let parsed = JSON.parse(raw.substring(firstBrace, lastBrace + 1));
 
     // =====================================================
-    // 🔒 HARD VALIDATION LAYER
+    // DETERMINISTIC FINANCIAL ENGINE
     // =====================================================
 
     parsed.actions = (parsed.actions || []).map(action => {
 
-      if (typeof action.amount === "number") {
+      if (typeof action.amount === "number")
         action.amount = Math.abs(action.amount);
+
+      const containsSettlementKeyword =
+        text.includes("سدد") ||
+        text.includes("مديون") ||
+        text.includes("due") ||
+        text.includes("settle") ||
+        text.includes("paid off");
+
+      // ================= CREDIT =================
+
+      if (action.mentionsCredit) {
+
+        if (!action.amount || containsSettlementKeyword) {
+          // Settlement
+          action.action = "TRANSFER_FUNDS";
+          action.type = "transfer";
+
+          action.sourceAccountId = defaultAccountId;
+          action.destinationAccountId = defaultCreditCardId;
+          action.title = "Credit Card Settlement";
+
+        } else {
+          // Purchase
+          action.action = "LOG_TRANSACTION";
+          action.type = "expense";
+
+          action.sourceAccountId = defaultCreditCardId;
+          action.destinationAccountId = null;
+        }
       }
 
-      if (action.action === "OBLIGATION_PAYMENT") {
-        action.type = "expense";
-      }
+      // ================= EXPENSE =================
 
       if (action.type === "expense") {
+
+        if (!action.sourceAccountId)
+          action.sourceAccountId = defaultAccountId;
+
         action.destinationAccountId = null;
       }
 
-      if (action.mentionsCredit && defaultCreditCardId) {
-        action.sourceAccountId = defaultCreditCardId;
+      // ================= INCOME =================
+
+      if (action.type === "income") {
+
+        action.sourceAccountId = null;
+
+        if (!action.destinationAccountId)
+          action.destinationAccountId = defaultAccountId;
       }
 
-      if (!action.confidence || action.confidence < 0.6) {
-        action.requiresClarification = true;
+      // ================= TRANSFER =================
+
+      if (action.action === "TRANSFER_FUNDS") {
+
+        action.type = "transfer";
+
+        if (!action.sourceAccountId)
+          action.sourceAccountId = defaultAccountId;
+
+        if (!action.destinationAccountId && !action.mentionsCredit)
+          action.requiresClarification = true;
       }
+
+      // ================= OBLIGATION =================
+
+      if (action.action === "OBLIGATION_PAYMENT") {
+
+        action.type = "expense";
+
+        if (!action.sourceAccountId)
+          action.sourceAccountId = defaultAccountId;
+
+        if (!action.relatedId)
+          action.requiresClarification = true;
+      }
+
+      // ================= SAFETY =================
+
+      if (!action.title || action.title.length < 2)
+        action.title = "Transaction";
+
+      if (!action.confidence || action.confidence < 0.6)
+        action.requiresClarification = true;
 
       return action;
     });
