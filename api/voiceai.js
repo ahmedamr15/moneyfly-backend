@@ -218,7 +218,7 @@ Return format:
           text.includes("statement") ||
           text.includes("due");
 
-        if (!item.amount || settlement) {
+        if (settlement && !item.intent === "expense") {
           action.action = "TRANSFER_FUNDS";
           action.type = "transfer";
           action.sourceAccountId = defaultAccountId;
@@ -266,7 +266,18 @@ Return format:
 
         action.currency = resolveCurrency(item.currency, base);
       }
+if (
+  action.action === "TRANSFER_FUNDS" &&
+  action.sourceAccountId &&
+  action.destinationAccountId
+) {
+  const sourceAcc = accounts.find(a => a.id === action.sourceAccountId);
+  const destAcc = accounts.find(a => a.id === action.destinationAccountId);
 
+  if (sourceAcc && destAcc && sourceAcc.currency !== destAcc.currency) {
+    action.requiresClarification = true;
+  }
+}
       if (!action.amount && action.action !== "OBLIGATION_PAYMENT")
         action.requiresClarification = true;
 
