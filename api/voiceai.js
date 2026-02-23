@@ -13,8 +13,8 @@ module.exports = async function (req, res) {
 
     const {
       message,
-      defaultAccountId = null,
-      defaultCreditCardId = null,
+      defaultAccountId = null,          // for income + obligations
+      defaultPaymentMethodId = null,    // NEW: for purchases
       accounts = [],
       creditCards = [],
       loans = [],
@@ -28,12 +28,11 @@ module.exports = async function (req, res) {
     const text = message.toLowerCase();
 
     // ===============================
-    // LLM SYSTEM PROMPT
+    // LLM PROMPT
     // ===============================
 
     const systemPrompt = `
 You are a financial intent parser.
-
 Return STRICT JSON only.
 Support multiple actions.
 
@@ -52,11 +51,8 @@ mentionsLoan
 mentionsInstallment
 confidence
 
-Return format:
-
-{
-  "actions": [ { ... } ]
-}
+Return:
+{ "actions": [ ... ] }
 `;
 
     async function callLLM(model) {
@@ -118,7 +114,7 @@ Return format:
       throw new Error("Invalid AI schema");
 
     // ===============================
-    // RESOLVER HELPERS
+    // HELPERS
     // ===============================
 
     function matchByName(list, name) {
@@ -193,7 +189,7 @@ Return format:
         const source = matchByName(accounts, item.rawSourceName);
         const dest = matchByName(accounts, item.rawDestinationName);
 
-        if (source === "AMBIGUOUS" || dest === "AMBIGUOUS")
+        if (!source || !dest || source === "AMBIGUOUS" || dest === "AMBIGUOUS")
           action.requiresClarification = true;
 
         action.sourceAccountId = source?.id || null;
@@ -201,42 +197,6 @@ Return format:
 
         const base = source?.currency || "EGP";
         action.currency = resolveCurrency(item.currency, base);
-      }
-
-      // =====================
-      // CREDIT
-      // =====================
-      else if (item.mentionsCredit) {
-        const card =
-          creditCards.length === 1
-            ? creditCards[0]
-            : defaultCreditCardId
-            ? creditCards.find(c => c.id === defaultCreditCardId)
-            : "AMBIGUOUS";
-
-        if (!card || card === "AMBIGUOUS")
-          action.requiresClarification = true;
-
-        const settlement =
-          text.includes("سدد") ||
-          text.includes("due") ||
-          text.includes("statement");
-
-        if (!item.amount || settlement) {
-          action.action = "TRANSFER_FUNDS";
-          action.type = "transfer";
-          action.sourceAccountId = defaultAccountId;
-          action.destinationAccountId = card?.id || null;
-        } else {
-          action.action = "LOG_TRANSACTION";
-          action.type = "expense";
-          action.sourceAccountId = card?.id || null;
-        }
-
-        action.currency = resolveCurrency(
-          item.currency,
-          card?.currency || "EGP"
-        );
       }
 
       // =====================
@@ -267,19 +227,62 @@ Return format:
         action.action = "LOG_TRANSACTION";
         action.type = item.intent === "income" ? "income" : "expense";
 
-        if (action.type === "expense")
-          action.sourceAccountId = defaultAccountId;
-
-        if (action.type === "income")
+        // ===== INCOME =====
+        if (action.type === "income") {
           action.destinationAccountId = defaultAccountId;
+          action.currency = resolveCurrency(
+            item.currency,
+            accounts.find(a => a.id === defaultAccountId)?.currency || "EGP"
+          );
+        }
 
-        const base =
-          accounts.find(a => a.id === defaultAccountId)?.currency || "EGP";
+        // ===== EXPENSE PURCHASE (NEW ENGINE) =====
+        else {
+          const explicit = matchByName(
+            [...accounts, ...creditCards],
+            item.rawSourceName
+          );
 
-        action.currency = resolveCurrency(item.currency, base);
+          if (explicit && explicit !== "AMBIGUOUS") {
+            action.sourceAccountId = explicit.id;
+          }
+
+          else if (item.mentionsCredit) {
+
+            if (creditCards.length === 1) {
+              action.sourceAccountId = creditCards[0].id;
+            }
+            else if (
+              defaultPaymentMethodId &&
+              creditCards.some(c => c.id === defaultPaymentMethodId)
+            ) {
+              action.sourceAccountId = defaultPaymentMethodId;
+            }
+            else {
+              action.requiresClarification = true;
+            }
+          }
+
+          else if (defaultPaymentMethodId) {
+            action.sourceAccountId = defaultPaymentMethodId;
+          }
+
+          else {
+            action.requiresClarification = true;
+          }
+
+          const baseAccount =
+            accounts.find(a => a.id === action.sourceAccountId) ||
+            creditCards.find(c => c.id === action.sourceAccountId);
+
+          action.currency = resolveCurrency(
+            item.currency,
+            baseAccount?.currency || "EGP"
+          );
+        }
       }
 
-      // FX conflict protection
+      // FX Protection
       if (
         action.action === "TRANSFER_FUNDS" &&
         action.sourceAccountId &&
