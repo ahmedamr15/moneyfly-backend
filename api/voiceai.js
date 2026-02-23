@@ -15,7 +15,12 @@ module.exports = async function (req, res) {
       message,
       defaultAccountId = null,
       defaultCreditCardId = null,
-      defaultCurrency = "EGP"
+      defaultCurrency = "EGP",
+      accounts = [],
+      creditCards = [],
+      loans = [],
+      installments = [],
+      categories = []
     } = req.body;
 
     if (!message)
@@ -63,30 +68,29 @@ Return STRICT JSON only.
 No explanation.
 No markdown.
 
-ALLOWED ACTION VALUES:
-LOG_TRANSACTION
-TRANSFER_FUNDS
-OBLIGATION_PAYMENT
+AVAILABLE ACCOUNTS:
+${JSON.stringify(accounts)}
 
-ALLOWED TYPE VALUES:
-expense
-income
-transfer
+AVAILABLE CREDIT CARDS:
+${JSON.stringify(creditCards)}
+
+AVAILABLE LOANS:
+${JSON.stringify(loans)}
+
+AVAILABLE INSTALLMENTS:
+${JSON.stringify(installments)}
+
+AVAILABLE CATEGORIES:
+${JSON.stringify(categories)}
 
 CRITICAL RULES:
 
-1) Generic verbs like "دفعت", "paid" DO NOT imply obligation.
-2) OBLIGATION_PAYMENT only allowed if loan/installment explicitly mentioned
-   OR credit settlement words appear (due, statement, minimum, settle, سدد).
-3) Credit + amount = purchase.
-4) Credit without amount OR settlement words = settlement.
-5) Currency must be ISO 3-letter.
-
-TITLE RULES:
-- English
-- Max 3 words
-- No numbers
-- Merchant or purpose only
+1) Use ONLY IDs from provided lists.
+2) Generic verbs like "دفعت" do NOT imply obligation.
+3) OBLIGATION_PAYMENT only if loan/installment explicitly matched.
+4) Credit + amount = purchase.
+5) Credit without amount OR settlement words = settlement.
+6) Currency must be ISO 3-letter.
 
 RETURN FORMAT:
 
@@ -98,10 +102,10 @@ RETURN FORMAT:
       "title": "string",
       "amount": number | null,
       "currency": "ISO_CODE | null",
-      "categoryId": "string | null",
-      "sourceAccountId": "string | null",
-      "destinationAccountId": "string | null",
-      "relatedId": "string | null",
+      "categoryId": "UUID | null",
+      "sourceAccountId": "UUID | null",
+      "destinationAccountId": "UUID | null",
+      "relatedId": "UUID | null",
       "mentionsCredit": boolean,
       "mentionsLoan": boolean,
       "mentionsInstallment": boolean,
@@ -156,106 +160,10 @@ RETURN FORMAT:
     if (firstBrace === -1 || lastBrace === -1)
       return res.status(500).json({ error: "Malformed AI response" });
 
-    let parsed;
-    try {
-      parsed = JSON.parse(raw.substring(firstBrace, lastBrace + 1));
-    } catch {
-      return res.status(500).json({ error: "Invalid JSON returned by AI" });
-    }
+    let parsed = JSON.parse(raw.substring(firstBrace, lastBrace + 1));
 
     if (!parsed.actions || !Array.isArray(parsed.actions))
       return res.status(500).json({ error: "Invalid AI schema" });
-
-    // ================= NORMALIZATION =================
-
-    function cleanNullStrings(obj) {
-      Object.keys(obj).forEach(key => {
-        if (obj[key] === "null" || obj[key] === "NULL")
-          obj[key] = null;
-      });
-      return obj;
-    }
-
-    const currencyMap = {
-      "EGP": "EGP", "جنيه": "EGP",
-      "USD": "USD", "دولار": "USD",
-      "EUR": "EUR", "يورو": "EUR",
-      "SAR": "SAR", "ريال": "SAR",
-      "AED": "AED", "درهم": "AED",
-      "KWD": "KWD", "دينار": "KWD",
-      "QAR": "QAR",
-      "OMR": "OMR",
-      "BHD": "BHD"
-    };
-
-    parsed.actions = parsed.actions.map(action => {
-
-      action = cleanNullStrings(action);
-
-      if (typeof action.amount === "number")
-        action.amount = Math.abs(action.amount);
-
-      // Currency normalization
-      if (action.currency) {
-        const c = action.currency.toUpperCase();
-        let found = false;
-        for (let key in currencyMap) {
-          if (c.includes(key.toUpperCase())) {
-            action.currency = currencyMap[key];
-            found = true;
-            break;
-          }
-        }
-        if (!found) action.currency = defaultCurrency;
-      } else {
-        action.currency = defaultCurrency;
-      }
-
-      const settlementKeyword =
-        text.includes("سدد") ||
-        text.includes("مديون") ||
-        text.includes("due") ||
-        text.includes("statement") ||
-        text.includes("minimum") ||
-        text.includes("settle");
-
-      // CREDIT HANDLING
-      if (action.mentionsCredit) {
-        if (!action.amount || settlementKeyword) {
-          action.action = "TRANSFER_FUNDS";
-          action.type = "transfer";
-          action.sourceAccountId = defaultAccountId;
-          action.destinationAccountId = defaultCreditCardId;
-          action.title = "Credit Card Payment";
-        } else {
-          action.action = "LOG_TRANSACTION";
-          action.type = "expense";
-          action.sourceAccountId = defaultCreditCardId;
-          action.destinationAccountId = null;
-        }
-      }
-
-      // Prevent invalid obligation
-      if (action.action === "OBLIGATION_PAYMENT" && !action.relatedId) {
-        action.action = "LOG_TRANSACTION";
-        action.type = "expense";
-      }
-
-      if (action.type === "expense" && !action.sourceAccountId)
-        action.sourceAccountId = defaultAccountId;
-
-      if (action.type === "income" && !action.destinationAccountId)
-        action.destinationAccountId = defaultAccountId;
-
-      if (!action.title) action.title = "Transaction";
-      action.title = action.title.replace(/\d+/g, "").trim();
-      if (action.title.length > 30)
-        action.title = action.title.substring(0, 30);
-
-      if (!action.confidence) action.confidence = 0.8;
-
-      return action;
-    });
 
     return res.status(200).json(parsed);
 
