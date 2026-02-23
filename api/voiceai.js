@@ -14,7 +14,8 @@ module.exports = async function (req, res) {
     const {
       message,
       defaultAccountId = null,
-      defaultCreditCardId = null
+      defaultCreditCardId = null,
+      defaultCurrency = "EGP"
     } = req.body;
 
     if (!message)
@@ -22,7 +23,7 @@ module.exports = async function (req, res) {
 
     const text = message.toLowerCase();
 
-    // ================= SMART ROUTING =================
+    // ================= SMART MODEL ROUTING =================
 
     const clauseCount = (text.match(/ و | and /g) || []).length;
     const numbersCount = (text.match(/\d+/g) || []).length;
@@ -32,7 +33,8 @@ module.exports = async function (req, res) {
       text.includes("كريدت") ||
       text.includes("قرض") ||
       text.includes("install") ||
-      text.includes("حول");
+      text.includes("حول") ||
+      text.includes("transfer");
 
     let modelChain;
 
@@ -71,22 +73,20 @@ expense
 income
 transfer
 
+CRITICAL RULES:
+
+1) Generic verbs like "دفعت", "paid" DO NOT imply obligation.
+2) OBLIGATION_PAYMENT only allowed if loan/installment explicitly mentioned
+   OR credit settlement words appear (due, statement, minimum, settle, سدد).
+3) Credit + amount = purchase.
+4) Credit without amount OR settlement words = settlement.
+5) Currency must be ISO 3-letter.
+
 TITLE RULES:
-- Must be English
+- English
 - Max 3 words
 - No numbers
-- No currency
-- Merchant or purpose name only
-Examples:
-Chips
-Netflix
-Uber
-Coffee
-Credit Card Payment
-Loan Payment
-Transfer
-
-Currency must be ISO 3-letter code (EGP, USD, EUR).
+- Merchant or purpose only
 
 RETURN FORMAT:
 
@@ -133,10 +133,8 @@ RETURN FORMAT:
         );
 
         if (!response.ok) return null;
-
         const data = await response.json();
         return data.choices?.[0]?.message?.content || null;
-
       } catch {
         return null;
       }
@@ -178,6 +176,18 @@ RETURN FORMAT:
       return obj;
     }
 
+    const currencyMap = {
+      "EGP": "EGP", "جنيه": "EGP",
+      "USD": "USD", "دولار": "USD",
+      "EUR": "EUR", "يورو": "EUR",
+      "SAR": "SAR", "ريال": "SAR",
+      "AED": "AED", "درهم": "AED",
+      "KWD": "KWD", "دينار": "KWD",
+      "QAR": "QAR",
+      "OMR": "OMR",
+      "BHD": "BHD"
+    };
+
     parsed.actions = parsed.actions.map(action => {
 
       action = cleanNullStrings(action);
@@ -185,33 +195,39 @@ RETURN FORMAT:
       if (typeof action.amount === "number")
         action.amount = Math.abs(action.amount);
 
-      // ISO currency normalization
+      // Currency normalization
       if (action.currency) {
         const c = action.currency.toUpperCase();
-        if (c.includes("EGP") || c.includes("جنيه")) action.currency = "EGP";
-        else if (c.includes("USD") || c.includes("دولار")) action.currency = "USD";
-        else if (c.includes("EUR") || c.includes("يورو")) action.currency = "EUR";
+        let found = false;
+        for (let key in currencyMap) {
+          if (c.includes(key.toUpperCase())) {
+            action.currency = currencyMap[key];
+            found = true;
+            break;
+          }
+        }
+        if (!found) action.currency = defaultCurrency;
+      } else {
+        action.currency = defaultCurrency;
       }
 
       const settlementKeyword =
         text.includes("سدد") ||
         text.includes("مديون") ||
         text.includes("due") ||
+        text.includes("statement") ||
+        text.includes("minimum") ||
         text.includes("settle");
 
-      // ================= CREDIT LOGIC =================
-
+      // CREDIT HANDLING
       if (action.mentionsCredit) {
-
         if (!action.amount || settlementKeyword) {
-          // Settlement
           action.action = "TRANSFER_FUNDS";
           action.type = "transfer";
           action.sourceAccountId = defaultAccountId;
           action.destinationAccountId = defaultCreditCardId;
           action.title = "Credit Card Payment";
         } else {
-          // Purchase
           action.action = "LOG_TRANSACTION";
           action.type = "expense";
           action.sourceAccountId = defaultCreditCardId;
@@ -219,7 +235,11 @@ RETURN FORMAT:
         }
       }
 
-      // ================= FALLBACKS =================
+      // Prevent invalid obligation
+      if (action.action === "OBLIGATION_PAYMENT" && !action.relatedId) {
+        action.action = "LOG_TRANSACTION";
+        action.type = "expense";
+      }
 
       if (action.type === "expense" && !action.sourceAccountId)
         action.sourceAccountId = defaultAccountId;
@@ -227,23 +247,12 @@ RETURN FORMAT:
       if (action.type === "income" && !action.destinationAccountId)
         action.destinationAccountId = defaultAccountId;
 
-      if (action.action === "OBLIGATION_PAYMENT") {
-        action.type = "expense";
-        if (!action.sourceAccountId)
-          action.sourceAccountId = defaultAccountId;
-      }
-
-      // ================= TITLE SANITIZER =================
-
       if (!action.title) action.title = "Transaction";
-
       action.title = action.title.replace(/\d+/g, "").trim();
-
       if (action.title.length > 30)
         action.title = action.title.substring(0, 30);
 
-      if (!action.confidence || action.confidence < 0.6)
-        action.requiresClarification = true;
+      if (!action.confidence) action.confidence = 0.8;
 
       return action;
     });
