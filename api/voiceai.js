@@ -15,7 +15,6 @@ module.exports = async function (req, res) {
       message,
       defaultAccountId = null,
       defaultCreditCardId = null,
-      defaultCurrency = "EGP",
       accounts = [],
       creditCards = [],
       loans = [],
@@ -28,148 +27,252 @@ module.exports = async function (req, res) {
 
     const text = message.toLowerCase();
 
-    // ================= SMART MODEL ROUTING =================
-
-    const clauseCount = (text.match(/ و | and /g) || []).length;
-    const numbersCount = (text.match(/\d+/g) || []).length;
-
-    const complexIntent =
-      text.includes("credit") ||
-      text.includes("كريدت") ||
-      text.includes("قرض") ||
-      text.includes("install") ||
-      text.includes("حول") ||
-      text.includes("transfer");
-
-    let modelChain;
-
-    if (clauseCount >= 2 || numbersCount >= 3) {
-      modelChain = [
-        "qwen/qwen3-32b",
-        "meta-llama/llama-4-scout-17b-16e-instruct",
-        "llama-3.1-8b-instant"
-      ];
-    } else if (complexIntent) {
-      modelChain = [
-        "meta-llama/llama-4-scout-17b-16e-instruct",
-        "llama-3.1-8b-instant"
-      ];
-    } else {
-      modelChain = [
-        "allam-2-7b",
-        "llama-3.1-8b-instant"
-      ];
-    }
+    // ============================
+    // 1️⃣ LLM PARSER (Intent Only)
+    // ============================
 
     const systemPrompt = `
-You are a deterministic financial intent parser.
+You are a financial intent parser.
 
 Return STRICT JSON only.
-No explanation.
-No markdown.
 
-AVAILABLE ACCOUNTS:
-${JSON.stringify(accounts)}
+Extract:
+- intent (expense | income | transfer | obligation)
+- amount (number or null)
+- currency (ISO code or null)
+- title (short English, no numbers)
+- rawSourceName
+- rawDestinationName
+- rawRelatedName
+- mentionsCredit
+- mentionsLoan
+- mentionsInstallment
+- confidence
 
-AVAILABLE CREDIT CARDS:
-${JSON.stringify(creditCards)}
-
-AVAILABLE LOANS:
-${JSON.stringify(loans)}
-
-AVAILABLE INSTALLMENTS:
-${JSON.stringify(installments)}
-
-AVAILABLE CATEGORIES:
-${JSON.stringify(categories)}
-
-CRITICAL RULES:
-
-1) Use ONLY IDs from provided lists.
-2) Generic verbs like "دفعت" do NOT imply obligation.
-3) OBLIGATION_PAYMENT only if loan/installment explicitly matched.
-4) Credit + amount = purchase.
-5) Credit without amount OR settlement words = settlement.
-6) Currency must be ISO 3-letter.
-
-RETURN FORMAT:
+Return:
 
 {
-  "actions": [
-    {
-      "action": "LOG_TRANSACTION | TRANSFER_FUNDS | OBLIGATION_PAYMENT",
-      "type": "expense | income | transfer",
-      "title": "string",
-      "amount": number | null,
-      "currency": "ISO_CODE | null",
-      "categoryId": "UUID | null",
-      "sourceAccountId": "UUID | null",
-      "destinationAccountId": "UUID | null",
-      "relatedId": "UUID | null",
-      "mentionsCredit": boolean,
-      "mentionsLoan": boolean,
-      "mentionsInstallment": boolean,
-      "confidence": number
-    }
-  ]
+  "intent": "",
+  "amount": null,
+  "currency": null,
+  "title": "",
+  "rawSourceName": null,
+  "rawDestinationName": null,
+  "rawRelatedName": null,
+  "mentionsCredit": false,
+  "mentionsLoan": false,
+  "mentionsInstallment": false,
+  "confidence": 0.9
 }
 `;
 
-    async function callModel(model) {
-      try {
-        const response = await fetch(
-          "https://api.groq.com/openai/v1/chat/completions",
-          {
-            method: "POST",
-            headers: {
-              Authorization: `Bearer ${API_KEY}`,
-              "Content-Type": "application/json"
-            },
-            body: JSON.stringify({
-              model,
-              temperature: 0,
-              messages: [
-                { role: "system", content: systemPrompt },
-                { role: "user", content: message }
-              ]
-            })
+    async function callLLMChain() {
+      const models = [
+        "meta-llama/llama-4-scout-17b-16e-instruct",
+        "qwen/qwen3-32b",
+        "llama-3.1-8b-instant"
+      ];
+
+      for (let model of models) {
+        try {
+          const response = await fetch(
+            "https://api.groq.com/openai/v1/chat/completions",
+            {
+              method: "POST",
+              headers: {
+                Authorization: `Bearer ${API_KEY}`,
+                "Content-Type": "application/json"
+              },
+              body: JSON.stringify({
+                model,
+                temperature: 0,
+                messages: [
+                  { role: "system", content: systemPrompt },
+                  { role: "user", content: message }
+                ]
+              })
+            }
+          );
+
+          if (!response.ok) continue;
+          const data = await response.json();
+          const content = data.choices?.[0]?.message?.content;
+
+          if (content && content.includes("{")) {
+            console.log("Model used:", model);
+            return content;
           }
-        );
-
-        if (!response.ok) return null;
-        const data = await response.json();
-        return data.choices?.[0]?.message?.content || null;
-      } catch {
-        return null;
+        } catch (e) {
+          continue;
+        }
       }
+
+      throw new Error("All LLMs failed");
     }
 
-    let raw = null;
+    const raw = await callLLMChain();
+    const parsed = JSON.parse(
+      raw.substring(raw.indexOf("{"), raw.lastIndexOf("}") + 1)
+    );
 
-    for (let model of modelChain) {
-      raw = await callModel(model);
-      if (raw) break;
+    // ============================
+    // 2️⃣ Deterministic Resolver
+    // ============================
+
+    function matchByName(list, name) {
+      if (!name) return null;
+      const matches = list.filter(item =>
+        item.name.toLowerCase().includes(name.toLowerCase())
+      );
+      if (matches.length === 1) return matches[0];
+      if (matches.length > 1) return "AMBIGUOUS";
+      return null;
     }
 
-    if (!raw)
-      return res.status(500).json({ error: "All models failed" });
+    function resolveCurrency(parsedCurrency, accountCurrency) {
+      const currencyMap = {
+        "egp": "EGP",
+        "جنيه": "EGP",
+        "usd": "USD",
+        "دولار": "USD",
+        "eur": "EUR",
+        "يورو": "EUR",
+        "sar": "SAR",
+        "ريال": "SAR",
+        "aed": "AED",
+        "درهم": "AED",
+        "kwd": "KWD",
+        "دينار": "KWD",
+        "qar": "QAR",
+        "omr": "OMR",
+        "bhd": "BHD"
+      };
 
-    const firstBrace = raw.indexOf("{");
-    const lastBrace = raw.lastIndexOf("}");
+      if (!parsedCurrency) return accountCurrency;
 
-    if (firstBrace === -1 || lastBrace === -1)
-      return res.status(500).json({ error: "Malformed AI response" });
+      const key = parsedCurrency.toLowerCase();
+      return currencyMap[key] || accountCurrency;
+    }
 
-    let parsed = JSON.parse(raw.substring(firstBrace, lastBrace + 1));
+    const action = {
+      action: null,
+      type: null,
+      title: parsed.title || "Transaction",
+      amount: parsed.amount ? Math.abs(parsed.amount) : null,
+      currency: null,
+      categoryId: null,
+      sourceAccountId: null,
+      destinationAccountId: null,
+      relatedId: null,
+      requiresClarification: false,
+      confidence: parsed.confidence || 0.9
+    };
 
-    if (!parsed.actions || !Array.isArray(parsed.actions))
-      return res.status(500).json({ error: "Invalid AI schema" });
+    // ================= TRANSFER =================
 
-    return res.status(200).json(parsed);
+    if (parsed.intent === "transfer") {
+      action.action = "TRANSFER_FUNDS";
+      action.type = "transfer";
+
+      const source = matchByName(accounts, parsed.rawSourceName);
+      const dest = matchByName(accounts, parsed.rawDestinationName);
+
+      if (source === "AMBIGUOUS" || dest === "AMBIGUOUS")
+        action.requiresClarification = true;
+
+      if (!source || !dest)
+        action.requiresClarification = true;
+
+      action.sourceAccountId = source?.id || null;
+      action.destinationAccountId = dest?.id || null;
+
+      const currencyBase = source?.currency || "EGP";
+      action.currency = resolveCurrency(parsed.currency, currencyBase);
+    }
+
+    // ================= CREDIT =================
+
+    else if (parsed.mentionsCredit) {
+      let card =
+        creditCards.length === 1
+          ? creditCards[0]
+          : defaultCreditCardId
+          ? creditCards.find(c => c.id === defaultCreditCardId)
+          : "AMBIGUOUS";
+
+      if (!card || card === "AMBIGUOUS")
+        action.requiresClarification = true;
+
+      const settlementWords =
+        text.includes("سدد") ||
+        text.includes("statement") ||
+        text.includes("due") ||
+        text.includes("minimum");
+
+      if (!parsed.amount || settlementWords) {
+        action.action = "TRANSFER_FUNDS";
+        action.type = "transfer";
+        action.sourceAccountId = defaultAccountId;
+        action.destinationAccountId = card?.id || null;
+      } else {
+        action.action = "LOG_TRANSACTION";
+        action.type = "expense";
+        action.sourceAccountId = card?.id || null;
+      }
+
+      const currencyBase =
+        creditCards.find(c => c.id === action.sourceAccountId)?.currency ||
+        "EGP";
+
+      action.currency = resolveCurrency(parsed.currency, currencyBase);
+    }
+
+    // ================= LOAN / INSTALLMENT =================
+
+    else if (parsed.mentionsLoan || parsed.mentionsInstallment) {
+      const pool = [...loans, ...installments];
+      const match = matchByName(pool, parsed.rawRelatedName);
+
+      if (match === "AMBIGUOUS" || !match)
+        action.requiresClarification = true;
+
+      action.action = "OBLIGATION_PAYMENT";
+      action.type = "expense";
+      action.sourceAccountId = defaultAccountId;
+      action.relatedId = match?.id || null;
+
+      const accountBase =
+        accounts.find(a => a.id === defaultAccountId)?.currency || "EGP";
+
+      action.currency = resolveCurrency(parsed.currency, accountBase);
+    }
+
+    // ================= NORMAL EXPENSE / INCOME =================
+
+    else {
+      action.action = "LOG_TRANSACTION";
+      action.type = parsed.intent === "income" ? "income" : "expense";
+
+      if (action.type === "expense")
+        action.sourceAccountId = defaultAccountId;
+      else action.destinationAccountId = defaultAccountId;
+
+      const accountBase =
+        accounts.find(a => a.id === defaultAccountId)?.currency || "EGP";
+
+      action.currency = resolveCurrency(parsed.currency, accountBase);
+    }
+
+    // ================= FINAL SAFETY =================
+
+    if (!action.amount && action.action !== "OBLIGATION_PAYMENT")
+      action.requiresClarification = true;
+
+    return res.status(200).json({ actions: [action] });
 
   } catch (error) {
     return res.status(500).json({
-      error: "Function crashed",
+      error: "VoiceAI crashed",
       message: error.message
     });
   }
