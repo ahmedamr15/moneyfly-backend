@@ -25,7 +25,7 @@ export default async function handler(req, res) {
     const CURRENT_YEAR = new Date().getUTCFullYear();
 
     const systemPrompt = `
-You are a deterministic banking SMS parser.
+You are a STRICT deterministic banking SMS parser.
 
 Return STRICT JSON only.
 No explanation.
@@ -33,9 +33,6 @@ No markdown.
 No extra text.
 
 Current year is: ${CURRENT_YEAR}
-
-Your job:
-Parse banking SMS messages and classify them correctly.
 
 Allowed intents:
 
@@ -49,52 +46,28 @@ Allowed intents:
 - declined
 - non_transaction
 
-Definitions:
-
-expense:
-Money charged or debited from card/account.
-
-income:
-Money credited to account.
-
-transfer:
-Explicit bank transfer inward or outward.
-
-credit_card_payment:
-Payment made toward a credit card (reduces card liability).
-
-loan_created:
-New loan created.
-
-installment_created:
-Installment plan created.
-
-statement:
-Monthly statement or balance notification (NOT a transaction).
-
-declined:
-Transaction was rejected or failed.
-
-non_transaction:
-OTP, marketing, reminder, irrelevant SMS.
-
 CRITICAL RULES:
 
-1) Never invent data.
-2) Remove commas from numeric amounts.
-3) If currency not found → currency = null.
-4) If currency = null AND intent is expense/income/transfer → requiresClarification = true.
+1) NEVER modify decimal values. Preserve decimal precision EXACTLY.
+   Example: 17.49 must stay 17.49 (NOT 1749).
+2) Remove commas only (1,000.50 → 1000.50).
+3) If currency missing → currency = null.
+4) If currency null AND intent is expense/income/transfer → requiresClarification = true.
 5) If last 4 digits not found → cardLast4 = null.
-6) If merchant not clearly stated → merchant = null.
-7) If full date not found → date = null.
-8) If year missing → use current year (${CURRENT_YEAR}).
-9) All returned dates MUST be full ISO 8601 format with time and Z (example: 2026-02-26T00:00:00.000Z).
-10) If message indicates rejection → intent = declined.
-11) If message indicates statement/balance notification → intent = statement AND date = null.
-12) If message confirms installment creation → installment_created.
-13) If message confirms loan creation → loan_created.
-14) If message confirms credit card payment received → credit_card_payment.
-15) Confidence must be between 0 and 1.
+6) If merchant unclear → merchant = null.
+7) If no date → date = null.
+8) If year missing → use ${CURRENT_YEAR}.
+9) All dates MUST be full ISO 8601 with time and Z.
+   Example: 2026-02-26T15:30:00.000Z
+10) For format "01-26 الساعة 15:30":
+    Treat as month-day.
+11) For format "26-02":
+    Treat as day-month.
+12) Statement messages → intent = statement AND date = null.
+13) Rejected/failed → intent = declined.
+14) Installment confirmation → installment_created.
+15) Loan creation → loan_created.
+16) Credit card payment received → credit_card_payment.
 
 Return format:
 
@@ -147,9 +120,9 @@ Return format:
 
     const parsed = JSON.parse(jsonMatch[0]);
 
-    // ----------------------------
-    // Defensive Post Validation
-    // ----------------------------
+    // ----------------------
+    // Defensive Validation
+    // ----------------------
 
     const allowedIntents = [
       "expense",
@@ -167,14 +140,20 @@ Return format:
       parsed.intent = "non_transaction";
     }
 
-    // Normalize confidence
+    // Decimal protection
+    if (parsed.amount !== null) {
+      parsed.amount = Number(parsed.amount);
+      if (isNaN(parsed.amount)) parsed.amount = null;
+    }
+
+    // Confidence normalization
     if (typeof parsed.confidence !== "number") {
       parsed.confidence = 0.8;
     } else {
       parsed.confidence = Math.max(0, Math.min(1, parsed.confidence));
     }
 
-    // Currency missing clarification rule
+    // Currency clarification enforcement
     if (
       (parsed.intent === "expense" ||
         parsed.intent === "income" ||
@@ -189,9 +168,9 @@ Return format:
       parsed.date = null;
     }
 
-    // Ensure ISO date format if exists
+    // Enforce ISO date format strictly
     if (parsed.date) {
-      const isoCheck = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}.\d{3}Z$/;
+      const isoCheck = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.000Z$/;
       if (!isoCheck.test(parsed.date)) {
         parsed.date = null;
       }
