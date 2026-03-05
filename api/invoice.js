@@ -1,24 +1,23 @@
-module.exports = async function handler(req, res) {
-// CORS
-res.setHeader(‘Access-Control-Allow-Origin’, ‘*’);
-res.setHeader(‘Access-Control-Allow-Methods’, ‘POST, OPTIONS’);
-res.setHeader(‘Access-Control-Allow-Headers’, ‘Content-Type’);
-
-if (req.method === ‘OPTIONS’) return res.status(200).end();
-if (req.method !== ‘POST’) return res.status(405).json({ error: ‘Method not allowed’ });
-
+export default async function handler(req, res) {
 try {
-const { imageBase64, ocrText } = req.body;
+res.setHeader(“Access-Control-Allow-Origin”, “*”);
+res.setHeader(“Access-Control-Allow-Methods”, “POST, OPTIONS”);
+res.setHeader(“Access-Control-Allow-Headers”, “Content-Type”);
 
 ```
+if (req.method === "OPTIONS") return res.status(200).end();
+if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
+
+const { imageBase64, ocrText } = req.body;
+
 if (!imageBase64 || !ocrText) {
-  return res.status(400).json({ error: 'imageBase64 and ocrText are required' });
+  return res.status(400).json({ error: "imageBase64 and ocrText are required" });
 }
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 
 if (!GEMINI_API_KEY) {
-  return res.status(500).json({ error: 'Gemini API key not configured' });
+  return res.status(500).json({ error: "Gemini API key not configured" });
 }
 
 const prompt = `You are a receipt reconstruction engine.
@@ -66,7 +65,7 @@ const geminiPayload = {
       parts: [
         {
           inline_data: {
-            mime_type: 'image/jpeg',
+            mime_type: "image/jpeg",
             data: imageBase64,
           },
         },
@@ -85,45 +84,32 @@ const geminiPayload = {
 const geminiRes = await fetch(
   `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`,
   {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify(geminiPayload),
   }
 );
 
 if (!geminiRes.ok) {
   const errText = await geminiRes.text();
-  console.error('Gemini error:', errText);
-  return res.status(502).json({ error: 'Gemini API error', details: errText });
+  return res.status(502).json({ error: "Gemini API error", details: errText });
 }
 
 const geminiData = await geminiRes.json();
-const rawText = geminiData?.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
-
-// Strip markdown fences if present
-const cleaned = rawText.replace(/```json|```/g, '').trim();
+const rawText = geminiData?.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
+const cleaned = rawText.replace(/```json|```/g, "").trim();
 
 let parsed;
 try {
   parsed = JSON.parse(cleaned);
 } catch (e) {
-  console.error('JSON parse error:', cleaned);
-  return res.status(422).json({ error: 'Failed to parse Gemini response', raw: cleaned });
+  return res.status(422).json({ error: "Failed to parse Gemini response", raw: cleaned });
 }
 
 return res.status(200).json(parsed);
 ```
 
-} catch (err) {
-console.error(‘Unexpected error:’, err);
-return res.status(500).json({ error: ‘Internal server error’, details: err.message });
+} catch (error) {
+return res.status(500).json({ error: error.message });
 }
-};
-
-module.exports.config = {
-api: {
-bodyParser: {
-sizeLimit: ‘10mb’,
-},
-},
-};
+}
