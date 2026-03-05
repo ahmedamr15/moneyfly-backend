@@ -1,12 +1,4 @@
-export const config = {
-api: {
-bodyParser: {
-sizeLimit: ‘10mb’,
-},
-},
-};
-
-export default async function handler(req, res) {
+module.exports = async function handler(req, res) {
 // CORS
 res.setHeader(‘Access-Control-Allow-Origin’, ‘*’);
 res.setHeader(‘Access-Control-Allow-Methods’, ‘POST, OPTIONS’);
@@ -39,14 +31,14 @@ Use the OCR text to confirm values.
 RULES:
 
 1. Item names are words/phrases.
-1. Quantities are small integers (1–10).
+1. Quantities are small integers (1-10).
 1. Unit prices are the price for one item.
-1. Total price = quantity × unit_price.
+1. Total price = quantity x unit_price.
 1. If qty > 1, repeat the item that many times as separate entries each with unit_price and total_price = unit_price (not the full total).
 1. Extract service charge percentage if mentioned.
 1. Extract VAT/tax percentage if mentioned.
 1. Extract tips if mentioned.
-1. subtotal = sum of all (unit_price × quantity).
+1. subtotal = sum of all (unit_price x quantity).
 1. total = final amount paid.
 
 OCR TEXT:
@@ -91,7 +83,7 @@ const geminiPayload = {
 };
 
 const geminiRes = await fetch(
-  `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-lite:generateContent?key=${GEMINI_API_KEY}`,
+  `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`,
   {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -106,7 +98,6 @@ if (!geminiRes.ok) {
 }
 
 const geminiData = await geminiRes.json();
-
 const rawText = geminiData?.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
 
 // Strip markdown fences if present
@@ -127,4 +118,12 @@ return res.status(200).json(parsed);
 console.error(‘Unexpected error:’, err);
 return res.status(500).json({ error: ‘Internal server error’, details: err.message });
 }
-}
+};
+
+module.exports.config = {
+api: {
+bodyParser: {
+sizeLimit: ‘10mb’,
+},
+},
+};
