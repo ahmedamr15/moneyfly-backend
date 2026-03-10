@@ -49,7 +49,6 @@ Allowed intents:
 CRITICAL RULES:
 
 1) NEVER modify decimal values. Preserve decimal precision EXACTLY.
-   Example: 17.49 must stay 17.49 (NOT 1749).
 2) Remove commas only (1,000.50 → 1000.50).
 3) If currency missing → currency = null.
 4) If currency null AND intent is expense/income/transfer → requiresClarification = true.
@@ -58,15 +57,53 @@ CRITICAL RULES:
 7) If no date → date = null.
 8) If year missing → use ${CURRENT_YEAR}.
 9) All dates MUST be full ISO 8601 with time and Z.
-   Example: 2026-02-26T15:30:00.000Z
+
+-------------------------
+TRANSACTION CLASSIFICATION
+-------------------------
+
+If the message contains ANY of the following phrases:
+
+- "you received"
+- "credited"
+- "has been credited"
+- "incoming transfer"
+- "refund"
+
+Then intent MUST be:
+
+income
+
+Never classify these messages as expense.
+
+-------------------------
+CARD RULES
+-------------------------
+
+If cardLast4 exists AND message says "received" or "credited":
+
+Treat as income (refund or incoming transfer).
+
+Do NOT classify as expense.
+
+-------------------------
+DATE RULES
+-------------------------
+
 10) For format "01-26 الساعة 15:30":
-    Treat as month-day.
+Treat as month-day.
+
 11) For format "26-02":
-    Treat as day-month.
+Treat as day-month.
+
 12) Statement messages → intent = statement AND date = null.
+
 13) Rejected/failed → intent = declined.
+
 14) Installment confirmation → installment_created.
+
 15) Loan creation → loan_created.
+
 16) Credit card payment received → credit_card_payment.
 
 Return format:
@@ -82,7 +119,6 @@ Return format:
   "confidence": number
 }
 `;
-
     const response = await fetch(
       "https://api.groq.com/openai/v1/chat/completions",
       {
