@@ -1,58 +1,34 @@
-// api/stocks.js
 const axios = require('axios');
 
 export default async function handler(req, res) {
     const apiKey = process.env.TWELVE_DATA_KEY;
-    
-    // 1. Define the "Big List" of symbols you want to track
-    // We use suffixes: .CA (Egypt), .SR (Saudi), .AD (Abu Dhabi), .DFM (Dubai)
-    const symbols = [
-        // Arab Countries (Top Picks)
-        "JUFO.CA", "TMGH.CA", "SWDY.CA", // Egypt
-        "2222.SR", "1120.SR", "7010.SR", // Saudi (Aramco, Al Rajhi, STC)
-        "FAB.AD", "ETISALAT.AD",         // Abu Dhabi
-        "EMAAR.DFM",                     // Dubai
-        
-        // US & Europe
-        "AAPL", "MSFT", "GOOGL", "TSLA", "NVDA", // US
-        "ASML.AS", "MC.PA", "SAP.DE"             // Europe (Netherlands, France, Germany)
-    ];
 
+    if (!apiKey) {
+        return res.status(500).json({ error: "API Key is missing from Vercel Environment Variables" });
+    }
+
+    // Start with a very small list to verify it works
+    const symbols = ["AAPL", "MSFT", "PAXGUSDT"]; 
     const symbolsString = symbols.join(",");
-    const url = `https://api.twelvedata.com/price?symbol=${symbolsString}&apikey=${apiKey}`;
 
     try {
-        // 2. Get Prices from Twelve Data
+        const url = `https://api.twelvedata.com/price?symbol=${symbolsString}&apikey=${apiKey}`;
         const response = await axios.get(url);
-        const prices = response.data;
-
-        // 3. Get USD/EGP Exchange Rate (to meet your 'USD only' requirement)
-        const rateResponse = await axios.get(`https://api.twelvedata.com/exchange_rate?symbol=USD/EGP&apikey=${apiKey}`);
-        const egpRate = rateResponse.data.rate;
-
-        // 4. Format the final JSON for your iOS App
-        const formattedData = Object.keys(prices).map(symbol => {
-            let rawPrice = parseFloat(prices[symbol].price);
-            let currency = symbol.endsWith(".CA") || symbol.endsWith(".SR") ? "Local" : "USD";
-            
-            // Logic: Convert Egyptian stocks to USD automatically
-            let priceInUSD = symbol.endsWith(".CA") ? (rawPrice / egpRate) : rawPrice;
-
-            return {
-                ticker: symbol,
-                price_usd: priceInUSD.toFixed(2),
-                original_price: rawPrice.toFixed(2),
-                is_arab_market: symbol.includes(".") && !symbol.endsWith(".AS") && !symbol.endsWith(".PA")
-            };
-        });
+        
+        // Twelve Data sometimes returns 200 OK but with an error message in the body
+        if (response.data.status === "error") {
+            return res.status(400).json({ error: response.data.message });
+        }
 
         res.status(200).json({
-            last_updated: new Date().toISOString(),
-            usd_egp_rate: egpRate,
-            stocks: formattedData
+            success: true,
+            data: response.data
         });
 
     } catch (error) {
-        res.status(500).json({ error: "Failed to fetch stock data" });
+        res.status(500).json({ 
+            error: "Axios Fetch Failed", 
+            details: error.message 
+        });
     }
 }
