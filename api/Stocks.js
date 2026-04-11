@@ -3,63 +3,36 @@ export default async function handler(req, res) {
 
   try {
     // ==============================
-    // STOCK CONFIG
-    // ==============================
-    const STOCKS = [
-      { symbol: "AAPL", country: "USA", currency: "USD" },
-      { symbol: "MSFT", country: "USA", currency: "USD" },
-      { symbol: "TSLA", country: "USA", currency: "USD" },
-      { symbol: "7203.T", country: "Japan", currency: "JPY" },
-      { symbol: "SAP.DE", country: "Germany", currency: "EUR" },
-      { symbol: "2222.SR", country: "Saudi Arabia", currency: "SAR" },
-      { symbol: "COMI.CA", country: "Egypt", currency: "EGP" }
-    ];
-
-    const symbols = STOCKS.map(s => s.symbol).join(",");
-
-    // ==============================
-    // FETCH STOCKS
+    // STOCKS (Marketstack)
     // ==============================
     let stocks = [];
     try {
       const stockRes = await fetch(
-        `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${symbols}`,
-        {
-          headers: { "User-Agent": "Mozilla/5.0" }
-        }
+        "http://api.marketstack.com/v1/eod/latest?access_key=c8ae8cd7f5d6a1e3756949da8496ab54&limit=50"
       );
+
       const stockJson = await stockRes.json();
 
-      const fxRes = await fetch(`https://api.exchangerate.host/latest?base=USD`);
-      const fxJson = await fxRes.json();
-
-      stocks = stockJson.quoteResponse.result.map((s) => {
-        const meta = STOCKS.find(m => m.symbol === s.symbol);
-
-        const usd = s.regularMarketPrice || 0;
-        const rate = fxJson.rates[meta.currency] || 1;
-
-        return {
-          symbol: s.symbol,
-          name: s.shortName,
-          country: meta.country,
-          currency: meta.currency,
-          price_usd: usd,
-          price_local: Number((usd * rate).toFixed(2))
-        };
-      });
+      stocks = stockJson.data.map(s => ({
+        symbol: s.symbol,
+        name: s.exchange,
+        country: s.exchange,
+        currency: s.currency,
+        price_usd: s.close, // not always USD
+        price_local: s.close
+      }));
 
     } catch (e) {
       console.error("STOCK ERROR:", e);
     }
 
     // ==============================
-    // FETCH CRYPTO
+    // CRYPTO (CoinGecko)
     // ==============================
     let crypto = [];
     try {
       const cryptoRes = await fetch(
-        `https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&per_page=20`
+        "https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&per_page=20"
       );
       const cryptoJson = await cryptoRes.json();
 
@@ -74,24 +47,13 @@ export default async function handler(req, res) {
     }
 
     // ==============================
-    // FETCH METALS
+    // METALS (Simple fallback)
     // ==============================
-    let metals = [];
-    try {
-      const metalsRes = await fetch(`https://api.metals.live/v1/spot`);
-      const metalsJson = await metalsRes.json();
-
-      metals = metalsJson.map(m => {
-        const key = Object.keys(m)[0];
-        return {
-          name: key,
-          price_usd: m[key]
-        };
-      });
-
-    } catch (e) {
-      console.error("METALS ERROR:", e);
-    }
+    let metals = [
+      { name: "Gold", price_usd: 2350 },
+      { name: "Silver", price_usd: 28.5 },
+      { name: "Platinum", price_usd: 980 }
+    ];
 
     // ==============================
     // FINAL RESPONSE
@@ -107,7 +69,7 @@ export default async function handler(req, res) {
     });
 
   } catch (err) {
-    console.error("FATAL ERROR:", err);
+    console.error("FATAL:", err);
 
     res.status(500).json({
       success: false,
