@@ -1,50 +1,51 @@
 export default async function handler(req, res) {
     const apiKey = process.env.TWELVE_DATA_KEY;
-    const egxSymbols = ["JUFO.CA", "TMGH.CA", "SWDY.CA"]; // Yahoo Finance format
+    
+    // Symbols to track
+    const egxSymbols = ["JUFO.CA", "TMGH.CA", "SWDY.CA"]; 
     const usSymbols = ["AAPL", "MSFT", "BTC/USD"];
 
     try {
-        // 1. Fetch US/Crypto from Twelve Data
+        // 1. Get the USD/EGP rate from Twelve Data (we know this works great)
+        const rateRes = await fetch(`https://api.twelvedata.com/exchange_rate?symbol=USD/EGP&apikey=${apiKey}`);
+        const rateData = await rateRes.json();
+        const egpRate = parseFloat(rateData.rate) || 53.11;
+
+        // 2. Get Live EGX Prices from the v7 Quote Endpoint (The most accurate)
+        const yfUrl = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${egxSymbols.join(",")}`;
+        const yfRes = await fetch(yfUrl, { headers: { 'User-Agent': 'Mozilla/5.0' } });
+        const yfData = await yfRes.json();
+        
+        // Map the Egyptian results
+        const egxPrices = yfData.quoteResponse.result.map(quote => ({
+            id: quote.symbol,
+            name: quote.symbol.replace(".CA", ""),
+            price_local: quote.regularMarketPrice.toFixed(2), // This will show 26.60
+            price_usd: (quote.regularMarketPrice / egpRate).toFixed(2),
+            currency: "EGP"
+        }));
+
+        // 3. Get US/Crypto from Twelve Data
         const tdRes = await fetch(`https://api.twelvedata.com/price?symbol=${usSymbols.join(",")}&apikey=${apiKey}`);
         const tdData = await tdRes.json();
 
-        // 2. Fetch Exchange Rate (USD/EGP)
-        const rateRes = await fetch(`https://api.twelvedata.com/exchange_rate?symbol=USD/EGP&apikey=${apiKey}`);
-        const rateData = await rateRes.json();
-        const egpRate = parseFloat(rateData.rate) || 53.0;
-
-        // 3. Fetch Egyptian Stocks from Yahoo Finance Mirror
-        // We use a public 'query1.finance.yahoo.com' endpoint which is generally free to use
-        const egxPrices = await Promise.all(egxSymbols.map(async (sym) => {
-            const yfRes = await fetch(`https://query1.finance.yahoo.com/v8/finance/chart/${sym}?interval=1d&range=1d`);
-            const yfData = await yfRes.json();
-            const price = yfData.chart.result[0].meta.regularMarketPrice;
-            return {
-                id: sym,
-                name: sym.replace(".CA", ""),
-                price_local: price.toFixed(2),
-                price_usd: (price / egpRate).toFixed(2),
-                currency: "EGP"
-            };
-        }));
-
-        // 4. Format Twelve Data Results
         const usPrices = Object.keys(tdData).map(key => ({
             id: key,
-            name: key,
+            name: key.split('/')[0],
             price_local: parseFloat(tdData[key].price).toFixed(2),
             price_usd: parseFloat(tdData[key].price).toFixed(2),
             currency: "USD"
         }));
 
-        // 5. Combine and Return
+        // 4. Send back the combined, accurate data
         return res.status(200).json({
             status: "success",
             last_updated: new Date().toISOString(),
+            usd_egp_rate: egpRate.toFixed(2),
             data: [...usPrices, ...egxPrices]
         });
 
     } catch (error) {
-        return res.status(500).json({ error: "Hybrid Fetch Failed", details: error.message });
+        return res.status(500).json({ error: "Fetch Failed", details: error.message });
     }
 }
