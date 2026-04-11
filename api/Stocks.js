@@ -1,51 +1,66 @@
 export default async function handler(req, res) {
-    const apiKey = process.env.TWELVE_DATA_KEY;
-    
-    // Symbols to track
-    const egxSymbols = ["JUFO.CA", "TMGH.CA", "SWDY.CA"]; 
-    const usSymbols = ["AAPL", "MSFT", "BTC/USD"];
+  try {
+    // ===== A. STOCKS BY COUNTRY =====
+    const stocks = [
+      {
+        country: "USA",
+        currency: "USD",
+        stocks: [
+          { symbol: "AAPL", name: "Apple", price: 175.32 },
+          { symbol: "MSFT", name: "Microsoft", price: 320.11 },
+          { symbol: "TSLA", name: "Tesla", price: 210.45 }
+        ]
+      },
+      {
+        country: "Egypt",
+        currency: "EGP",
+        stocks: [
+          { symbol: "COMI", name: "CIB", price: 72.5 },
+          { symbol: "ETEL", name: "Telecom Egypt", price: 31.2 },
+          { symbol: "HRHO", name: "EFG Holding", price: 18.9 }
+        ]
+      },
+      {
+        country: "Saudi Arabia",
+        currency: "SAR",
+        stocks: [
+          { symbol: "2222", name: "Aramco", price: 32.1 },
+          { symbol: "1120", name: "Al Rajhi Bank", price: 78.4 }
+        ]
+      }
+    ];
 
-    try {
-        // 1. Get the USD/EGP rate from Twelve Data (we know this works great)
-        const rateRes = await fetch(`https://api.twelvedata.com/exchange_rate?symbol=USD/EGP&apikey=${apiKey}`);
-        const rateData = await rateRes.json();
-        const egpRate = parseFloat(rateData.rate) || 53.11;
+    // ===== B. CRYPTO =====
+    const crypto = [
+      { name: "Bitcoin", symbol: "BTC", price_usd: 68000 },
+      { name: "Ethereum", symbol: "ETH", price_usd: 3500 },
+      { name: "Solana", symbol: "SOL", price_usd: 140 }
+    ];
 
-        // 2. Get Live EGX Prices from the v7 Quote Endpoint (The most accurate)
-        const yfUrl = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${egxSymbols.join(",")}`;
-        const yfRes = await fetch(yfUrl, { headers: { 'User-Agent': 'Mozilla/5.0' } });
-        const yfData = await yfRes.json();
-        
-        // Map the Egyptian results
-        const egxPrices = yfData.quoteResponse.result.map(quote => ({
-            id: quote.symbol,
-            name: quote.symbol.replace(".CA", ""),
-            price_local: quote.regularMarketPrice.toFixed(2), // This will show 26.60
-            price_usd: (quote.regularMarketPrice / egpRate).toFixed(2),
-            currency: "EGP"
-        }));
+    // ===== C. METALS =====
+    const metals = [
+      { name: "Gold", symbol: "XAU", price_usd: 2350 },
+      { name: "Silver", symbol: "XAG", price_usd: 28.5 },
+      { name: "Platinum", symbol: "XPT", price_usd: 980 }
+    ];
 
-        // 3. Get US/Crypto from Twelve Data
-        const tdRes = await fetch(`https://api.twelvedata.com/price?symbol=${usSymbols.join(",")}&apikey=${apiKey}`);
-        const tdData = await tdRes.json();
+    // ===== FINAL RESPONSE =====
+    const response = {
+      success: true,
+      data: {
+        stocks_by_country: stocks,
+        crypto: crypto,
+        metals: metals
+      },
+      last_updated: new Date().toISOString()
+    };
 
-        const usPrices = Object.keys(tdData).map(key => ({
-            id: key,
-            name: key.split('/')[0],
-            price_local: parseFloat(tdData[key].price).toFixed(2),
-            price_usd: parseFloat(tdData[key].price).toFixed(2),
-            currency: "USD"
-        }));
+    res.status(200).json(response);
 
-        // 4. Send back the combined, accurate data
-        return res.status(200).json({
-            status: "success",
-            last_updated: new Date().toISOString(),
-            usd_egp_rate: egpRate.toFixed(2),
-            data: [...usPrices, ...egxPrices]
-        });
-
-    } catch (error) {
-        return res.status(500).json({ error: "Fetch Failed", details: error.message });
-    }
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: "Failed to fetch investment data"
+    });
+  }
 }
