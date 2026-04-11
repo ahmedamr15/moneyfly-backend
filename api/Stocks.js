@@ -1,52 +1,50 @@
 export default async function handler(req, res) {
     const apiKey = process.env.TWELVE_DATA_KEY;
-
-    // We'll test the EGX ticker format. If this fails, we swap to a different free provider for EGX.
-    const symbols = [
-        "AAPL", "MSFT", "NVDA", "BTC/USD", "PAXG/USD", 
-        "JUFO:EGX", "TMGH:EGX" 
-    ];
+    const egxSymbols = ["JUFO.CA", "TMGH.CA", "SWDY.CA"]; // Yahoo Finance format
+    const usSymbols = ["AAPL", "MSFT", "BTC/USD"];
 
     try {
-        const priceRes = await fetch(`https://api.twelvedata.com/price?symbol=${symbols.join(",")}&apikey=${apiKey}`);
-        const priceData = await priceRes.json();
+        // 1. Fetch US/Crypto from Twelve Data
+        const tdRes = await fetch(`https://api.twelvedata.com/price?symbol=${usSymbols.join(",")}&apikey=${apiKey}`);
+        const tdData = await tdRes.json();
 
-        // 1. Get the USD/EGP rate for your conversion
+        // 2. Fetch Exchange Rate (USD/EGP)
         const rateRes = await fetch(`https://api.twelvedata.com/exchange_rate?symbol=USD/EGP&apikey=${apiKey}`);
         const rateData = await rateRes.json();
-        const egpRate = parseFloat(rateData.rate) || 50.0; // Fallback if rate fails
+        const egpRate = parseFloat(rateData.rate) || 53.0;
 
-        const formatted = [];
+        // 3. Fetch Egyptian Stocks from Yahoo Finance Mirror
+        // We use a public 'query1.finance.yahoo.com' endpoint which is generally free to use
+        const egxPrices = await Promise.all(egxSymbols.map(async (sym) => {
+            const yfRes = await fetch(`https://query1.finance.yahoo.com/v8/finance/chart/${sym}?interval=1d&range=1d`);
+            const yfData = await yfRes.json();
+            const price = yfData.chart.result[0].meta.regularMarketPrice;
+            return {
+                id: sym,
+                name: sym.replace(".CA", ""),
+                price_local: price.toFixed(2),
+                price_usd: (price / egpRate).toFixed(2),
+                currency: "EGP"
+            };
+        }));
 
-        // 2. Loop through results and only keep successful ones
-        for (const [key, value] of Object.entries(priceData)) {
-            if (value.price) {
-                let price = parseFloat(value.price);
-                let priceUsd = price;
+        // 4. Format Twelve Data Results
+        const usPrices = Object.keys(tdData).map(key => ({
+            id: key,
+            name: key,
+            price_local: parseFloat(tdData[key].price).toFixed(2),
+            price_usd: parseFloat(tdData[key].price).toFixed(2),
+            currency: "USD"
+        }));
 
-                // Convert if it's an Egyptian ticker
-                if (key.includes(":EGX")) {
-                    priceUsd = price / egpRate;
-                }
-
-                formatted.push({
-                    id: key,
-                    name: key.split(':')[0], // Clean up "JUFO:EGX" to "JUFO"
-                    price_local: price.toFixed(2),
-                    price_usd: priceUsd.toFixed(2),
-                    currency: key.includes(":EGX") ? "EGP" : "USD"
-                });
-            }
-        }
-
+        // 5. Combine and Return
         return res.status(200).json({
             status: "success",
             last_updated: new Date().toISOString(),
-            usd_egp_rate: egpRate.toFixed(2),
-            data: formatted
+            data: [...usPrices, ...egxPrices]
         });
 
     } catch (error) {
-        return res.status(500).json({ error: error.message });
+        return res.status(500).json({ error: "Hybrid Fetch Failed", details: error.message });
     }
 }
